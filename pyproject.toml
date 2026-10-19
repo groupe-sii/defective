@@ -1,0 +1,9 @@
+[project]
+name = "whatsapp-fintech"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+dependencies = [
+    "strands-agents>=1.61.1",
+    "urllib3>=2.6.0",
+]
