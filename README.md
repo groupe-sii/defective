@@ -3,9 +3,9 @@
 > [!IMPORTANT]
 > This sample is meant to show integration of Strands agent with WhatsApp and is for inspirations purposes. Make sure to implement your organizations best practices before deploying this solution in production workloads.
 
-This demo aims to demonstrate how to use Meta's WhatsApp for Business integrated with **Strands-Agents** and Amazon Bedrock.
+This demo shows a **conformity assistant** for an operations team, built with **Strands-Agents** and Amazon Bedrock on top of Meta's WhatsApp for Business.
 
-It's a multi-agent demo, that will handle tasks for a fictitious fintech. One agent is responsible for loading daily promotions based on the day of the week, and another one is responsible for handling credit card operations, being able to load the last X days of fake transactions and schedule payments.
+A field technician reports an equipment non-conformity (leak, crack, corrosion, wrong reading) on WhatsApp. The agent searches past Non-Conformity Reports in an Amazon Bedrock Knowledge Base, drafts a handling procedure, and registers it as a case awaiting validation. A conformity expert — chatting with the same agent from their own number — reviews the draft and approves or rejects it. Once approved, the technician can ask the agent to email the procedure to the equipment contractor (mocked by default; SES in Phase 3). SMS/email/RCS channels and real outbound sends are planned next.
 
 Below is the overall architecture diagram:
 
@@ -13,15 +13,15 @@ Below is the overall architecture diagram:
 
 |Feature             |Description                                        |
 |--------------------|---------------------------------------------------|
-|Agent Structure     |Multi-agent architecture                          |
-|Custom Agents       |get_transactions, put_payment, get_promotions, get_day_of_week|
+|Chat roles          |Technician (report/status) and expert (validation), resolved per sender|
+|Custom Agents       |search_ncr_history (Bedrock KB), create_case, get_case, list_cases, record_validation, request_expert_validation, send_contractor_email|
 |Model Provider      |Amazon Bedrock                                     |
 
 
 1. The user interacts with the WhatsApp number.
 2. AWS End User Messaging receives the message and adds it to an SNS Topic.
-3. A Lambda function listening to this topic handles the message.
-4. The multi-agent system processes this message and redirects it to the desired agent.
+3. A Lambda function listening to this topic resolves the sender's role and handles the message.
+4. The Strands agent runs the non-conformity workflow with its tools and replies in the same chat.
 
 
 ## 1 - Getting started with AWS End User Messaging Social (Mandatory)
@@ -103,24 +103,40 @@ Click in "Edit Destination" to add your SNS output from Cloud Formation.
 
 ### 2.5 Demo
 
-This is a demo showing working solution with English locale:
+This is a demo showing the original sample (fintech) with English locale — the flow is the same, but the agent is now the conformity assistant:
 
 <img src="img/whatsapp-demo.gif" alt="demo" width="350"/>
 
 ### 2.6 Demo without a WhatsApp number (mock mode)
 
-The CloudFormation parameter **`MockWhatsApp`** (default `true`) makes the Lambda log the agent's reply instead of sending it through AWS End User Messaging — so you can demo deployment and the agent's capabilities with **no phone number, WABA, or Event Destination setup**.
+The CloudFormation parameter **`MockWhatsApp`** (default `true`) makes the Lambda log the agent's reply instead of sending it through AWS End User Messaging — so you can demo deployment and the agent's capabilities with **no phone number, WABA, or Event Destination setup**. **`MockEmail=true`** (default) likewise logs the contractor e-mail instead of sending it via SES.
 
 Send a message to the deployed agent with the helper script (it publishes a realistic WhatsApp webhook event to the stack's SNS topic and tails CloudWatch Logs for the reply):
 
 ```
 uv sync   # once - installs the venv deps incl. botocore[crt] for local AWS calls
-.venv/Scripts/python mock_send.py "What promotions do you have today?"
+.venv/Scripts/python mock_send.py "Hi, we found oil leaking around the mechanical seal of centrifugal pump P-101. What is the procedure? Contractor email: contractor@acme-demo.com"
 ```
 
-Useful flags: `--phone 5511987654321` (reuse a number to demo conversation history), `--text "..."`, `--print-event` (print the webhook JSON offline, no credentials needed), `--tail-only` (just follow the logs). Replies appear as `MOCK_WHATSAPP: reply to <phone>: ...` in the `/aws/lambda/WhatsApp-Aws-Integration-Main` log group.
+The full non-conformity flow, driven entirely from the CLI:
 
-When you connect a real WhatsApp number, redeploy with `MockWhatsApp=false` (see `AGENTS.md` for the update-stack command).
+```
+# 1. Technician reports (any number except the expert's is a technician)
+.venv/Scripts/python mock_send.py "Hi, we found oil leaking around the mechanical seal of centrifugal pump P-101. What is the procedure? Contractor email: contractor@acme-demo.com" --phone 5511987654321
+#    -> agent searches the NCR knowledge base, drafts a procedure, creates a case (NC-...), asks the expert
+
+# 2. Expert reviews and approves from their own chat (ExpertContacts parameter, default 5511999998888)
+.venv/Scripts/python mock_send.py "Please review case NC-YYYYMMDD-xxxxxx. It looks correct." --phone 5511999998888
+
+# 3. Technician checks status, then asks for the contractor e-mail
+.venv/Scripts/python mock_send.py "What is the status of my case?" --phone 5511987654321
+.venv/Scripts/python mock_send.py "Great, send the procedure by email to the contractor." --phone 5511987654321
+#    -> MOCK_EMAIL logged in CloudWatch, case moves to CONTRACTOR_NOTIFIED in the NonConformityCases table
+```
+
+Useful flags: `--phone` (pick the sender — this also picks the role), `--text "..."`, `--print-event` (print the webhook JSON offline, no credentials needed), `--tail-only` (just follow the logs). Replies appear as `MOCK_WHATSAPP: reply to <phone>: ...` in the `/aws/lambda/WhatsApp-Aws-Integration-Main` log group.
+
+When you connect a real WhatsApp number, redeploy with `MockWhatsApp=false` (see `AGENTS.md` for the update-stack command). The knowledge base `GXY5L19KJX` currently contains image-only content, so the agent's comparisons lean on the standard-practice caveat until real text NCRs are ingested.
 
 ## 3. Delete Resources
 

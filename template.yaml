@@ -34,6 +34,23 @@ Parameters:
       Description: Foundation model to be invoked on agent (must be an inference
         profile valid for the deployment region; eu-west-1 needs a eu.* profile,
         us.* profiles are rejected with ValidationException)
+  KnowledgeBaseId:
+    Type: String
+    Default: "GXY5L19KJX"
+    Description: Bedrock Knowledge Base holding the Non-Conformity Report history
+  ExpertContacts:
+    Type: String
+    Default: "5511999998888"
+    Description: >-
+      Comma-separated phone numbers (E.164 digits, no +) of the conformity
+      experts allowed to validate procedures in their chat with the agent
+  MockEmail:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: >-
+      Demo mode. When true the contractor e-mail tool logs the message instead
+      of sending it via SES
 
 ##########################################################################################
 ### Resources
@@ -72,6 +89,11 @@ Resources:
                 Resource:
                   - arn:aws:bedrock:*:*:foundation-model/*
                   - arn:aws:bedrock:*:*:inference-profile/*
+              - Effect: Allow
+                Action:
+                  - bedrock:Retrieve
+                Resource:
+                  - !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:knowledge-base/${KnowledgeBaseId}
         - PolicyName: messaging-access
           PolicyDocument:
             Version: 2012-10-17
@@ -96,7 +118,17 @@ Resources:
                 Resource:
                   - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/WhatsAppUserHistory
                   - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/WhatsAppUserHistory/index/PhoneNumberDayIndex
-                  - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/PromotionsList
+                  - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/NonConformityCases
+                  - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/NonConformityCases/index/*
+        - PolicyName: email-access
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                Resource: "*"
 
   #######################
   ### Infrastructure Resource Block
@@ -142,7 +174,10 @@ Resources:
         Variables:
           USER_HISTORY_TABLE: !Ref UserHistoryDynamoDBTable
           LOCALE: !Ref LocaleConfig
-          PROMO_TABLE: !Ref PromoDynamoDBTable
+          CASES_TABLE: !Ref CasesDynamoDBTable
+          KNOWLEDGE_BASE_ID: !Ref KnowledgeBaseId
+          EXPERT_CONTACTS: !Ref ExpertContacts
+          MOCK_EMAIL: !Ref MockEmail
           DEFAULT_MODEL: !Ref FoundationModelParam
           MOCK_WHATSAPP: !Ref MockWhatsApp
 
@@ -211,18 +246,35 @@ Resources:
       DisplayName: "WhatsAppAWSTopic"
 
 
-  # DynamoDB Table to store fake promotions
-  PromoDynamoDBTable:
+  # Non-conformity cases + expert validation workflow
+  CasesDynamoDBTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: "PromotionsList"
+      TableName: "NonConformityCases"
       BillingMode: PAY_PER_REQUEST
       KeySchema:
-        - AttributeName: "week_day"
+        - AttributeName: "case_id"
           KeyType: "HASH"
       AttributeDefinitions:
-        - AttributeName: "week_day"
-          AttributeType: "N"
+        - AttributeName: "case_id"
+          AttributeType: "S"
+        - AttributeName: "created_by"
+          AttributeType: "S"
+        - AttributeName: "status"
+          AttributeType: "S"
+      GlobalSecondaryIndexes:
+        - IndexName: "created_by-index"
+          KeySchema:
+            - AttributeName: "created_by"
+              KeyType: "HASH"
+          Projection:
+            ProjectionType: "ALL"
+        - IndexName: "status-index"
+          KeySchema:
+            - AttributeName: "status"
+              KeyType: "HASH"
+          Projection:
+            ProjectionType: "ALL"
 
 
 ##########################################################################################
