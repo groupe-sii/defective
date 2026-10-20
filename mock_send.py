@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Demo the deployed agent WITHOUT a WhatsApp phone number.
+"""Demo the deployed agent WITHOUT a WhatsApp phone number or SMS number.
 
-Publishes a crafted WhatsApp webhook event (the shape AWS End User Messaging
-would deliver) to the project's real SNS topic, which triggers the real Lambda,
-Strands agent, Bedrock model and DynamoDB history. Because the stack runs with
-MockWhatsApp=true, the reply is written to CloudWatch logs instead of being
-sent via WhatsApp -- and this script tails those logs for you.
+Publishes a crafted inbound event (WhatsApp webhook, or an AWS End User
+Messaging SMS payload) to the project's real SNS topic, which triggers the real
+Lambda, Strands agent, Bedrock model and DynamoDB history. Because the stack
+runs with MOCK_CHANNELS covering the demo channels, the reply is written to
+CloudWatch logs instead of being sent -- and this script tails those logs.
 
 Usage:
-    .venv/Scripts/python mock_send.py "What promotions do we have today?"
-    .venv/Scripts/python mock_send.py "And what did I ask you before?"   # same phone => history
-    .venv/Scripts/python mock_send.py --tail-only                        # re-read last replies
-    .venv/Scripts/python mock_send.py --print-event "hi"                 # just show the event JSON
+    .venv/Scripts/python mock_send.py "P-101 is leaking oil"
+    .venv/Scripts/python mock_send.py --channel sms "same case, sent by SMS"   # shared history
+    .venv/Scripts/python mock_send.py --tail-only                             # re-read last replies
+    .venv/Scripts/python mock_send.py --print-event "hi"                      # just show the event JSON
 
 Requires: boto3 + AWS credentials with permissions for CloudFormation (read),
 SNS (publish) and CloudWatch Logs (read).
@@ -28,15 +28,16 @@ import boto3
 STACK_NAME = "aws-whatsapp-stack"
 LAMBDA_FN = "WhatsApp-Aws-Integration-Main"
 LOG_GROUP = f"/aws/lambda/{LAMBDA_FN}"
-DEFAULT_MODEL_TEXT = "Hi! What promotions do we have today?"
+DEFAULT_MODEL_TEXT = "Hi! We found a leak on pump P-101. What is the procedure?"
 DEFAULT_PHONE = "5511987654321"  # fake, fixed => one conversation history
 MOCK_PHONE_NUMBER_ID = "123456789012345"  # fake Meta phone number id
+MOCK_SMS_DESTINATION = "15550100"  # fake AWS End User Messaging SMS number
 POLL_TIMEOUT_S = 120
 POLL_INTERVAL_S = 4
 MAX_LINE_CHARS = 4000
 
 
-def build_sns_message(text: str, phone: str, region: str, account: str) -> dict:
+def build_whatsapp_event(text: str, phone: str, region: str, account: str) -> dict:
     """Build the SNS message body exactly as WhatsappService expects it."""
     meta_arn = (
         f"arn:aws:social-messaging:{region}:{account}:phone-number-id/{MOCK_PHONE_NUMBER_ID}"
@@ -70,6 +71,25 @@ def build_sns_message(text: str, phone: str, region: str, account: str) -> dict:
         "whatsAppWebhookEntry": json.dumps(webhook_entry),
         "message_timestamp": str(int(time.time())),
     }
+
+
+def build_sms_event(text: str, phone: str) -> dict:
+    """Build the SNS message body as AWS End User Messaging SMS delivers it."""
+    return {
+        "originationNumber": f"+{phone}",
+        "destinationNumber": f"+{MOCK_SMS_DESTINATION}",
+        "messageKeyword": "",
+        "messageBody": text,
+        "inboundMessageId": f"sms-{uuid.uuid4().hex}",
+        "previousPublishedMessageId": "",
+        "message_timestamp": str(int(time.time())),
+    }
+
+
+def build_sns_message(text: str, phone: str, region: str, account: str, channel: str) -> dict:
+    if channel == "sms":
+        return build_sms_event(text, phone)
+    return build_whatsapp_event(text, phone, region, account)
 
 
 def get_topic_arn(cfn) -> str:
@@ -132,7 +152,7 @@ def print_events(events) -> list:
     for ev in events:
         msg = ev["message"].strip()
         print(f"  | {msg[:MAX_LINE_CHARS]}")
-        if "MOCK_WHATSAPP: reply" in msg or "Message processed successfully" in msg:
+        if "MOCK_" in msg and ": reply to" in msg:
             markers.append("reply")
         if "Error processing event" in msg or "ERROR" in msg:
             markers.append("error")
@@ -143,6 +163,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("text", nargs="?", default=DEFAULT_MODEL_TEXT, help="message to send to the agent")
     ap.add_argument("--phone", default=DEFAULT_PHONE, help="fake sender phone number (fixed => shared history)")
+    ap.add_argument("--channel", default="whatsapp", choices=["whatsapp", "sms"],
+                    help="inbound channel to simulate (same --phone on both shares one conversation)")
     ap.add_argument("--topic-arn", help="override SNS topic ARN (default: from stack outputs)")
     ap.add_argument("--region", help="AWS region (default: from boto3 session)")
     ap.add_argument("--print-event", action="store_true", help="only print the event JSON, don't publish")
@@ -154,7 +176,7 @@ def main() -> None:
 
     # --print-event works offline: no credentials or AWS calls needed.
     if args.print_event:
-        print(json.dumps(build_sns_message(args.text, args.phone, region, "123456789012"), indent=2))
+        print(json.dumps(build_sns_message(args.text, args.phone, region, "123456789012", args.channel), indent=2))
         return
 
     sns = session.client("sns", region_name=region)
@@ -162,14 +184,14 @@ def main() -> None:
     logs = session.client("logs", region_name=region)
 
     account = session.client("sts", region_name=region).get_caller_identity()["Account"]
-    message = build_sns_message(args.text, args.phone, region, account)
+    message = build_sns_message(args.text, args.phone, region, account, args.channel)
 
     since_ms = int((time.time() - 3600) * 1000) if args.tail_only else int(time.time() * 1000) - 30_000
 
     if not args.tail_only:
         topic_arn = args.topic_arn or get_topic_arn(cfn)
         print(f"Publishing to {topic_arn}")
-        print(f'  from={args.phone} text="{args.text}"')
+        print(f'  channel={args.channel} from={args.phone} text="{args.text}"')
         sns.publish(TopicArn=topic_arn, Message=json.dumps(message))
         print("Published. Waiting for the agent (Bedrock + tools can take 10-40s)...")
 

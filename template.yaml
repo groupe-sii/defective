@@ -15,19 +15,18 @@ Parameters:
   LocaleConfig:
     Type: String
     Default: "en_US"
-    Description: The locale configuration to be used by lambdas (values en_US, pt_BR)
+    Description: The locale configuration to be used by lambdas (values en_US, pt_BR, fr_FR)
   PythonVersion:
     Type: String
     Default: "3.11"
     Description: Python version
-  MockWhatsApp:
+  MockChannels:
     Type: String
-    Default: "true"
-    AllowedValues: ["true", "false"]
+    Default: "whatsapp,sms,email,rcs"
     Description: >-
-      Demo mode. When true, the Lambda logs replies instead of sending them via
-      WhatsApp (AWS End User Messaging), so no phone number is needed. Set to
-      false once a real WhatsApp number integration is connected.
+      Comma-separated channels kept in demo (mock) mode: replies are logged
+      instead of sent. Channels removed from this list send for real and must
+      be provisioned (WhatsApp number / SMS origination number / SES identity).
   FoundationModelParam:
       Type: String
       Default: "eu.amazon.nova-pro-v1:0"
@@ -103,6 +102,12 @@ Resources:
                   - social-messaging:SendWhatsAppMessage
                 Resource:
                 - !Sub arn:aws:social-messaging:${AWS::Region}:${AWS::AccountId}:phone-number-id/*
+              - Effect: Allow
+                Action:
+                  - sms-voice:SendTextMessage
+                Resource:
+                - !Sub arn:aws:sms-voice:${AWS::Region}:${AWS::AccountId}:phone-number/*
+                - !Sub arn:aws:sms-voice:${AWS::Region}:${AWS::AccountId}:configuration-set/*
         - PolicyName: dynamo-access
           PolicyDocument:
             Version: 2012-10-17
@@ -179,7 +184,7 @@ Resources:
           EXPERT_CONTACTS: !Ref ExpertContacts
           MOCK_EMAIL: !Ref MockEmail
           DEFAULT_MODEL: !Ref FoundationModelParam
-          MOCK_WHATSAPP: !Ref MockWhatsApp
+          MOCK_CHANNELS: !Ref MockChannels
 
 
   # Permisson for SNS to invoke Lambda

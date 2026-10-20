@@ -3,11 +3,14 @@ import json
 import logging
 import os
 import re
+import time
+from datetime import datetime
 
 from strands_agent import StrandsAgent
+from utils import dispatcher
 from utils.dynamo import DynamoDB
-from utils.whatsapp import WhatsappService
 from utils.locales import MESSAGES
+from utils.messages import parse_sns_message
 from tools.context import clear_sender, session_note, set_sender
 
 
@@ -46,92 +49,105 @@ def sanitize_decimals(value):
     return value
 
 
-def process_record(record):
-    sns = record.get("Sns", {})
-    sns_message = json.loads(sns.get("Message", "{}"), parse_float=decimal.Decimal)
-    print(f"sns_message: {sns_message}")
+def build_history_row(message, messages, role, system_prompt):
+    """One row per identity + day. `phone_number` stays the DynamoDB key name
+    for backwards compatibility; it now holds the normalized identity."""
+    now = datetime.now()
+    return {
+        "phone_number": message.identity,
+        "day": now.strftime("%Y/%m/%d"),
+        "session_time": int(time.time()),
+        "channel": message.channel,
+        "message_id": message.message_id,
+        "recipient": message.recipient,
+        "channel_meta": message.channel_meta,
+        "messages": messages,
+        "system_prompt": system_prompt,
+    }
 
-    whatsapp_info = WhatsappService(sns_message)
+
+def process_record(record, sns_client=None):
+    sns = record.get("Sns", {})
+    raw = sns.get("Message", "{}")
+    if not raw:
+        logger.error("Empty SNS record: %s", record)
+        return None
+    sns_message = json.loads(raw, parse_float=decimal.Decimal)
+
+    inbound_messages = parse_sns_message(sns_message)
+    if not inbound_messages:
+        logger.error("No inbound message could be parsed from SNS record")
+        return None
+
     dynamo = DynamoDB()
     bedrock = StrandsAgent()
 
-    for message in whatsapp_info.messages:
+    for message in inbound_messages:
         # Resolve who is talking BEFORE invoking the agent: tools gate on this
         # context (record_validation is expert-only) and the session line in
         # the system prompt tells the model who it is chatting with.
-        sender = message.phone_number
-        role = resolve_role(sender)
-        set_sender(role, sender, "whatsapp")
-        logger.info("Sender %s resolved as %s", sender, role)
+        role = resolve_role(message.sender)
+        set_sender(role, message.sender, message.channel)
+        logger.info("Sender %s on %s resolved as %s",
+                    message.sender, message.channel, role)
         try:
-            message_type = message.message.get("type")
-            print("type:", message_type)
+            if not message.is_text:
+                logger.error("Unsupported message type: %s", message.message_type)
+                _publish_failure(sns_client, f"Unsupported message type: {message.message_type}")
+                return 500
 
-            if message_type == "text":
-                data = {
-                    "message": message.message,
-                    "id": message.message_id,
-                    "phone_number": message.phone_number,
-                    "phone_number_id": message.phone_number_id,
-                    "metadata": message.metadata,
-                }
-            else:
-                data = {
-                    "message": MESSAGES[locale]["error"],
-                    "phone_number_id": message.phone_number_id,
-                    "metadata": message.metadata,
-                }
-                logger.error("Error on input. Not text")
-                return {
-                    "statusCode": 500,
-                    "body": json.dumps(
-                        "Error processing input type. Video, audio, image not supported yet."
-                    ),
-                }
-
-            # get history
-            history = dynamo.query_by_day(user_history_table, message.phone_number)
-            # print(f'History: {history}')
-            hist_build = (
-                history[0] if history != [] else None
-            )
+            # load history (keyed by identity, so channels share a conversation)
+            history = dynamo.query_by_day(user_history_table, message.identity)
+            hist_build = history[0] if history else None
             if hist_build is not None:
                 hist_build["messages"] = sanitize_decimals(hist_build["messages"])
-            print(f"History after Build: {hist_build}")
 
-            # invoking agent
             llm_response, agent_messages, sys_prompt = bedrock.agent_invoke(
-                message.get_text(), hist_build, session_note()
-            )
-            # logger.info(f'LLM answer: {llm_response}')
-
-            # Creating new row with bedrock response (for logging)
-            row = message.build_whatsapp_row(
-                phone_number=message.phone_number,
-                messages=agent_messages,
-                role="assistant",
-                meta_phone_number_id=message.meta_phone_number_id,
-                id=message.message_id,
-                phone_number_id=message.phone_number_id,
-                timestamp=message.timestamp,
-                system_prompt=sys_prompt,
+                message.text, hist_build, session_note()
             )
 
-            # Insert Log on Dynamo (LLM answer)
-            ret = dynamo.insert_user_message(user_history_table, row)
+            row = build_history_row(message, agent_messages, "assistant", sys_prompt)
+            dynamo.insert_user_message(user_history_table, row)
 
-            data["message"] = remove_thinking_tags(
-                llm_response.message["content"][0]["text"]
-            )
+            reply_text = remove_thinking_tags(llm_response.message["content"][0]["text"])
+            data = {
+                "channel": message.channel,
+                "phone_number": message.identity,
+                "message_id": message.message_id,
+                "message": reply_text,
+                "metadata": message.channel_meta,
+                "reply": dispatcher.send_reply(
+                    channel=message.channel,
+                    sender=message.identity,
+                    text=reply_text,
+                    phone_number_id=message.channel_meta.get("phone_number_id", ""),
+                    message_id=message.message_id,
+                    origination_number=message.recipient,
+                ),
+            }
             logger.info("Message processed successfully")
-
-            whatsapp_info.text_reply(
-                data["phone_number"], data["id"], data["phone_number_id"], data["message"]
-            )
+            return data
+        except Exception as e:
+            logger.error(f"Error processing message: {e}")
+            _publish_failure(sns_client, f"Error processing message: {e}")
+            raise e
         finally:
             # Lambda execution environments are reused across invocations:
             # never leak the sender context into the next message.
             clear_sender()
+
+
+def _publish_failure(sns_client, detail):
+    if sns_client is None or not os.environ.get("sns_topic_arn"):
+        return
+    try:
+        sns_client.publish(
+            TopicArn=os.environ["sns_topic_arn"],
+            Subject="Text-to-speech function failure",
+            Message=detail,
+        )
+    except Exception as err:
+        logger.error("Failed to publish failure notification: %s", err)
 
 
 def remove_thinking_tags(text):
@@ -149,9 +165,13 @@ def remove_thinking_tags(text):
 def lambda_handler(event, context):
     try:
         records = event.get("Records", [])
+        results = []
+        import boto3
+
+        sns_client = boto3.client("sns")
         for record in records:
-            process_record(record)
-        return {"statusCode": 200, "body": json.dumps("Success")}
+            results.append(process_record(record, sns_client))
+        return {"statusCode": 200, "body": json.dumps("Success", default=str)}
     except Exception as e:
         logger.error(f"Error processing event: {str(e)}")
         return {"statusCode": 500, "body": json.dumps("Error processing request")}

@@ -1,12 +1,17 @@
 import json
 import boto3
 import logging
-import os
 import time
 from typing import Dict, Optional
 from datetime import datetime
 
 logger = logging.getLogger()
+
+
+def normalize_phone(raw: str) -> str:
+    """Canonical phone identity: digits only, no '+'. Keeps history shared
+    between channels (WhatsApp and SMS from the same number)."""
+    return "".join(ch for ch in str(raw or "") if ch.isdigit())
 
 
 class WhatsappMessage:
@@ -27,6 +32,10 @@ class WhatsappMessage:
         self.metadata = metadata
         self.timestamp = message.get("timestamp", "")
         self.phone_number = message.get("from", "")
+        # Channel-agnostic aliases: the normalizer (utils/messages.py) uses
+        # these, so channel-specific code stays in this class only.
+        self.sender = normalize_phone(self.phone_number)
+        self.message_type = message.get("type", "")
         self.meta_api_version = meta_api_version
         self.message_id = message.get("id", "")
     
@@ -85,35 +94,3 @@ class WhatsappService:
             if phone_number.get("metaPhoneNumberId") == phone_number_id:
                 return phone_number
         return None
-
-    def text_reply(self, phone_number: str, message_id: str, 
-                   phone_number_id: str, text_message: str) -> Dict:
-        """Send a text reply via WhatsApp."""
-        # Demo mode (MOCK_WHATSAPP=true): skip the real AWS End User Messaging
-        # send so the agent can be demonstrated without a WhatsApp phone number.
-        if os.getenv("MOCK_WHATSAPP", "false").lower() == "true":
-            logger.info("MOCK_WHATSAPP: reply to %s: %s", phone_number, text_message)
-            return {"mocked": True, "to": phone_number, "text": text_message}
-
-        message_object = {
-            "messaging_product": "whatsapp",
-            "recipient_type": "individual",
-            "context": {"message_id": message_id},
-            "to": f"+{phone_number}",
-            "type": "text",
-            "text": {"preview_url": False, "body": text_message},
-        }
-        
-        kwargs = {
-            "originationPhoneNumberId": phone_number_id,
-            "metaApiVersion": "v20.0",
-            "message": bytes(json.dumps(message_object), "utf-8"),
-        }
-        
-        try:
-            response = self.client.send_whatsapp_message(**kwargs)
-            logger.info(f"Message sent successfully: {response}")
-            return response
-        except Exception as e:
-            logger.error(f"Error sending message: {str(e)}")
-            raise

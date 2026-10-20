@@ -5,7 +5,7 @@
 
 This demo shows a **conformity assistant** for an operations team, built with **Strands-Agents** and Amazon Bedrock on top of Meta's WhatsApp for Business.
 
-A field technician reports an equipment non-conformity (leak, crack, corrosion, wrong reading) on WhatsApp. The agent searches past Non-Conformity Reports in an Amazon Bedrock Knowledge Base, drafts a handling procedure, and registers it as a case awaiting validation. A conformity expert — chatting with the same agent from their own number — reviews the draft and approves or rejects it. Once approved, the technician can ask the agent to email the procedure to the equipment contractor (mocked by default; SES in Phase 3). SMS/email/RCS channels and real outbound sends are planned next.
+A field technician reports an equipment non-conformity (leak, crack, corrosion, wrong reading) on WhatsApp **or SMS**. The agent searches past Non-Conformity Reports in an Amazon Bedrock Knowledge Base, drafts a handling procedure, and registers it as a case awaiting validation. A conformity expert — chatting with the same agent from their own number — reviews the draft and approves or rejects it. Once approved, the technician can ask the agent to email the procedure to the equipment contractor (mocked by default; SES in Phase 3). Email/RCS outbound are dispatched but real sends are a later phase.
 
 Below is the overall architecture diagram:
 
@@ -13,15 +13,16 @@ Below is the overall architecture diagram:
 
 |Feature             |Description                                        |
 |--------------------|---------------------------------------------------|
+|Channels            |Inbound WhatsApp and SMS; reply dispatched on the same channel. Outbound email/RCS wired, real sends pending|
 |Chat roles          |Technician (report/status) and expert (validation), resolved per sender|
 |Custom Agents       |search_ncr_history (Bedrock KB), create_case, get_case, list_cases, record_validation, request_expert_validation, send_contractor_email|
 |Model Provider      |Amazon Bedrock                                     |
 
 
-1. The user interacts with the WhatsApp number.
+1. The user interacts with the WhatsApp or SMS number.
 2. AWS End User Messaging receives the message and adds it to an SNS Topic.
-3. A Lambda function listening to this topic resolves the sender's role and handles the message.
-4. The Strands agent runs the non-conformity workflow with its tools and replies in the same chat.
+3. A Lambda function listening to this topic normalizes the message, resolves the sender's role and handles it.
+4. The Strands agent runs the non-conformity workflow with its tools and replies on the same channel.
 
 
 ## 1 - Getting started with AWS End User Messaging Social (Mandatory)
@@ -57,7 +58,8 @@ pip install -r requirements.txt
 This project supports two languages:
 
 1. Brazilian Portuguese (pt_BR)
-1. US English (en_US)
+2. US English (en_US)
+3. French (fr_FR)
 
 **By default, `pack_and_deploy.sh` will deploy English locale, but you can change on `template.yaml` file. Change the parameter `LocaleConfig` for the desired locale at the beginning of the CloudFormation Template file, to change solution language!**
 
@@ -109,9 +111,9 @@ This is a demo showing the original sample (fintech) with English locale — the
 
 ### 2.6 Demo without a WhatsApp number (mock mode)
 
-The CloudFormation parameter **`MockWhatsApp`** (default `true`) makes the Lambda log the agent's reply instead of sending it through AWS End User Messaging — so you can demo deployment and the agent's capabilities with **no phone number, WABA, or Event Destination setup**. **`MockEmail=true`** (default) likewise logs the contractor e-mail instead of sending it via SES.
+The CloudFormation parameter **`MockChannels`** (default `whatsapp,sms,email,rcs`) lists the channels kept in demo mode: a channel in the list **logs** the reply instead of sending it, so you can demo deployment and the agent's capabilities with **no phone number, WABA, or Event Destination setup**. Channels are independent — remove one from the list and that channel sends for real (once provisioned). **`MockEmail=true`** (default) is a separate flag that logs the contractor e-mail instead of sending it via SES.
 
-Send a message to the deployed agent with the helper script (it publishes a realistic WhatsApp webhook event to the stack's SNS topic and tails CloudWatch Logs for the reply):
+Send a message to the deployed agent with the helper script (it publishes a realistic inbound event to the stack's SNS topic and tails CloudWatch Logs for the reply):
 
 ```
 uv sync   # once - installs the venv deps incl. botocore[crt] for local AWS calls
@@ -134,9 +136,15 @@ The full non-conformity flow, driven entirely from the CLI:
 #    -> MOCK_EMAIL logged in CloudWatch, case moves to CONTRACTOR_NOTIFIED in the NonConformityCases table
 ```
 
-Useful flags: `--phone` (pick the sender — this also picks the role), `--text "..."`, `--print-event` (print the webhook JSON offline, no credentials needed), `--tail-only` (just follow the logs). Replies appear as `MOCK_WHATSAPP: reply to <phone>: ...` in the `/aws/lambda/WhatsApp-Aws-Integration-Main` log group.
+**Multichannel.** Add `--channel sms` to any of the commands above to send it as an SMS instead of a WhatsApp message. History is keyed by phone identity (not channel), so the same number talking over WhatsApp and SMS shares **one** conversation — e.g. report the case on WhatsApp, then follow up by SMS and the agent still remembers the case:
 
-When you connect a real WhatsApp number, redeploy with `MockWhatsApp=false` (see `AGENTS.md` for the update-stack command). The knowledge base `GXY5L19KJX` currently contains image-only content, so the agent's comparisons lean on the standard-practice caveat until real text NCRs are ingested.
+```
+.venv/Scripts/python mock_send.py "Quick question: which case did I just open, and what is its status?" --phone 5511987654321 --channel sms
+```
+
+Useful flags: `--phone` (pick the sender — this also picks the role), `--channel whatsapp|sms`, `--text "..."`, `--print-event` (print the event JSON offline, no credentials needed), `--tail-only` (just follow the logs). Replies appear as `MOCK_<CHANNEL>: reply to <identity>: ...` in the `/aws/lambda/WhatsApp-Aws-Integration-Main` log group.
+
+When you connect a real WhatsApp or SMS number, drop that channel from `MockChannels` and redeploy (see `AGENTS.md` for the update-stack command); for WhatsApp that's also when the §2.4 Event Destination step matters. RCS is stubbed for a later phase. The knowledge base `GXY5L19KJX` currently contains image-only content, so the agent's comparisons lean on the standard-practice caveat until real text NCRs are ingested.
 
 ## 3. Delete Resources
 
