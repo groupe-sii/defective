@@ -20,10 +20,20 @@ Parameters:
     Type: String
     Default: "3.11"
     Description: Python version
+  MockWhatsApp:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: >-
+      Demo mode. When true, the Lambda logs replies instead of sending them via
+      WhatsApp (AWS End User Messaging), so no phone number is needed. Set to
+      false once a real WhatsApp number integration is connected.
   FoundationModelParam:
       Type: String
-      Default: "us.amazon.nova-pro-v1:0"
-      Description: Foundation model to be invoked on agent
+      Default: "eu.amazon.nova-pro-v1:0"
+      Description: Foundation model to be invoked on agent (must be an inference
+        profile valid for the deployment region; eu-west-1 needs a eu.* profile,
+        us.* profiles are rejected with ValidationException)
 
 ##########################################################################################
 ### Resources
@@ -50,7 +60,7 @@ Resources:
       Path: /
       ManagedPolicyArns:
         - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
-      Policies: 
+      Policies:
         - PolicyName: bedrock-access
           PolicyDocument:
             Version: 2012-10-17
@@ -59,7 +69,7 @@ Resources:
                 Action:
                   - bedrock:InvokeModel
                   - bedrock:InvokeModelWithResponseStream
-                Resource: 
+                Resource:
                   - arn:aws:bedrock:*:*:foundation-model/*
                   - arn:aws:bedrock:*:*:inference-profile/*
         - PolicyName: messaging-access
@@ -69,7 +79,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - social-messaging:SendWhatsAppMessage
-                Resource: 
+                Resource:
                 - !Sub arn:aws:social-messaging:${AWS::Region}:${AWS::AccountId}:phone-number-id/*
         - PolicyName: dynamo-access
           PolicyDocument:
@@ -83,15 +93,15 @@ Resources:
                   - dynamodb:DeleteItem
                   - dynamodb:Scan
                   - dynamodb:Query
-                Resource: 
+                Resource:
                   - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/WhatsAppUserHistory
                   - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/WhatsAppUserHistory/index/PhoneNumberDayIndex
                   - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/PromotionsList
 
   #######################
-  ### Infrastructure Resource Block 
+  ### Infrastructure Resource Block
   #######################
-  
+
   # DynamoDB Table to store history
   UserHistoryDynamoDBTable:
     Type: AWS::DynamoDB::Table
@@ -116,11 +126,11 @@ Resources:
     Properties:
       Code:
         S3Bucket: !Ref S3BucketName
-        S3Key: 
+        S3Key:
           !Join
             - ''
-            - 
-              - !Ref S3BucketPath 
+            -
+              - !Ref S3BucketPath
               - "/lambda.zip"
       FunctionName: WhatsApp-Aws-Integration-Main
       Handler: lambda_function.lambda_handler
@@ -131,9 +141,10 @@ Resources:
       Environment:
         Variables:
           USER_HISTORY_TABLE: !Ref UserHistoryDynamoDBTable
-          LOCALE: !Ref LocaleConfig 
+          LOCALE: !Ref LocaleConfig
           PROMO_TABLE: !Ref PromoDynamoDBTable
           DEFAULT_MODEL: !Ref FoundationModelParam
+          MOCK_WHATSAPP: !Ref MockWhatsApp
 
 
   # Permisson for SNS to invoke Lambda

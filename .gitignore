@@ -11,6 +11,7 @@ boto3/
 tmp-img/
 lambda.zip
 local.txt
+req-linux.txt
 binaries/
 tests/
 package/

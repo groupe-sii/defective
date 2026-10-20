@@ -66,7 +66,7 @@ This project supports two languages:
 This shell script will pack all Lambda functions and deploy Cloudformation stack.
 
 ```
-chmod +x lambda_pack.sh
+chmod +x pack_and_deploy.sh pack_lambda.sh
 
 export S3_BUCKET=<S3_BUCKET>
 export S3_KEY=<S3_KEY>
@@ -106,6 +106,21 @@ Click in "Edit Destination" to add your SNS output from Cloud Formation.
 This is a demo showing working solution with English locale:
 
 <img src="img/whatsapp-demo.gif" alt="demo" width="350"/>
+
+### 2.6 Demo without a WhatsApp number (mock mode)
+
+The CloudFormation parameter **`MockWhatsApp`** (default `true`) makes the Lambda log the agent's reply instead of sending it through AWS End User Messaging — so you can demo deployment and the agent's capabilities with **no phone number, WABA, or Event Destination setup**.
+
+Send a message to the deployed agent with the helper script (it publishes a realistic WhatsApp webhook event to the stack's SNS topic and tails CloudWatch Logs for the reply):
+
+```
+uv sync   # once - installs the venv deps incl. botocore[crt] for local AWS calls
+.venv/Scripts/python mock_send.py "What promotions do you have today?"
+```
+
+Useful flags: `--phone 5511987654321` (reuse a number to demo conversation history), `--text "..."`, `--print-event` (print the webhook JSON offline, no credentials needed), `--tail-only` (just follow the logs). Replies appear as `MOCK_WHATSAPP: reply to <phone>: ...` in the `/aws/lambda/WhatsApp-Aws-Integration-Main` log group.
+
+When you connect a real WhatsApp number, redeploy with `MockWhatsApp=false` (see `AGENTS.md` for the update-stack command).
 
 ## 3. Delete Resources
 

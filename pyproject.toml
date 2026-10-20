@@ -7,3 +7,11 @@ dependencies = [
     "strands-agents>=1.61.1",
     "urllib3>=2.6.0",
 ]
+
+# Local-only tooling. `botocore[crt]` is needed by boto3 when credentials
+# come from `aws login` (otherwise: "Using the login credential provider
+# requires an additional dependency"). `mock_send.py` uses it.
+[dependency-groups]
+dev = [
+    "botocore[crt]>=1.43.0",
+]

@@ -1,6 +1,7 @@
 import json
 import boto3
 import logging
+import os
 import time
 from typing import Dict, Optional
 from datetime import datetime
@@ -88,6 +89,12 @@ class WhatsappService:
     def text_reply(self, phone_number: str, message_id: str, 
                    phone_number_id: str, text_message: str) -> Dict:
         """Send a text reply via WhatsApp."""
+        # Demo mode (MOCK_WHATSAPP=true): skip the real AWS End User Messaging
+        # send so the agent can be demonstrated without a WhatsApp phone number.
+        if os.getenv("MOCK_WHATSAPP", "false").lower() == "true":
+            logger.info("MOCK_WHATSAPP: reply to %s: %s", phone_number, text_message)
+            return {"mocked": True, "to": phone_number, "text": text_message}
+
         message_object = {
             "messaging_product": "whatsapp",
             "recipient_type": "individual",

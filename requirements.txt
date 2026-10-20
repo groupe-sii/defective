@@ -1,2 +1,2 @@
-strands-agents
+strands-agents>=1.61.1
 urllib3>=2.6.0

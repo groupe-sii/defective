@@ -31,25 +31,8 @@ KEY="$2"
 echo "Bucket: $BUCKET"
 echo "Key: $KEY"
 
-# Creating package folder to store contents of lambda directory (with packages)
-if [ ! -d "package" ]; then
-    mkdir package
-fi
-
-pip install -r requirements.txt \
---platform manylinux2014_x86_64 \
---target=package \
---implementation cp \
---python-version $PYTHON_VERSION \
---only-binary=:all: --upgrade
-
-cd package && find . -type d -name "__pycache__" -exec rm -r {} + && cd ..
-
-cp -R lambdas/* package/
-
-# Creating a zip file from the contents of the package directory, to be uploaded to S3
-echo "Creating lambda.zip from the contents of the lambda directory"
-(cd package && 7z a ../lambda.zip *)
+# Build lambda.zip (deps resolved for the Lambda runtime; works on Windows and Linux)
+./pack_lambda.sh "$PYTHON_VERSION"
 
 # Uploading the lambda.zip to the specified S3 bucket and key
 echo "Uploading lambda.zip into: $BUCKET"
