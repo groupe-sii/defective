@@ -26,7 +26,9 @@ WHAT IT DOES
 For each entry in `conformity.expert_contacts` in infra-cdk/config.yaml:
 
   1. ensure a Cognito user exists for the number
-     (username = `<phone>`; technicians never log in, so no password is set —
+     (username = `<phone>@conformity.local`; the pool signs in by e-mail, so a
+      synthetic address is used while the real number stays on the user's
+      phone_number attribute. No password is set — these users never log in,
       they interact over WhatsApp/SMS and are mapped by phone number), and
   2. write a contacts row:
         actor_id        = <Cognito sub>        (primary key)
@@ -72,14 +74,34 @@ def load_expert_contacts() -> list:
     return list((config.get("conformity") or {}).get("expert_contacts") or [])
 
 
+def username_for_phone(phone: str) -> str:
+    """Cognito username for a phone identity.
+
+    The user pool is created with ``UsernameAttributes: ['email']`` (FAST's
+    default — e-mail is the sign-in identifier), so Cognito rejects a bare phone
+    number with:
+
+        InvalidParameterException: Username should be an email.
+
+    Nothing downstream depends on the username being the number: the channel
+    handler and the Pre-Token Lambda both key on the Cognito ``sub``, which
+    becomes ``actor_id``. So the seed uses a deterministic, clearly-synthetic
+    address derived from the phone number. The real phone stays on the user as
+    the ``phone_number`` attribute and in the contacts row as ``phone_identity``.
+    """
+    return f"{phone}@conformity.local"
+
+
 def ensure_cognito_user(cognito, user_pool_id: str, phone: str) -> str:
     """Return the Cognito sub for `phone`, creating the user if needed.
 
-    The username is the phone number itself. No password is set: these users
-    never sign in to the web console, they are addressed by phone number through
-    the channel handler, which maps number -> this user's sub.
+    The username is a synthetic e-mail derived from the phone (see
+    `username_for_phone`) because the pool signs users in by e-mail. No password
+    is set: these users never sign in to the web console, they are addressed by
+    phone number through the channel handler, which maps number -> this user's
+    sub.
     """
-    username = phone
+    username = username_for_phone(phone)
     try:
         resp = cognito.admin_get_user(UserPoolId=user_pool_id, Username=username)
         for attr in resp.get("UserAttributes", []):
@@ -97,6 +119,9 @@ def ensure_cognito_user(cognito, user_pool_id: str, phone: str) -> str:
             UserPoolId=user_pool_id,
             Username=username,
             UserAttributes=[
+                # The pool signs users in by e-mail, so 'email' must be present.
+                {"Name": "email", "Value": username},
+                {"Name": "email_verified", "Value": "true"},
                 {"Name": "phone_number", "Value": f"+{phone}"},
                 {"Name": "phone_number_verified", "Value": "true"},
             ],
