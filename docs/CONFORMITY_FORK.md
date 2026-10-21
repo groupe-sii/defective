@@ -207,11 +207,89 @@ non-digits corrupts it. The SMS destination number *is* normalized.
 
 ---
 
+## AgentCore API shapes that only fail at deploy/invoke time
+
+The first successful deploy of this fork surfaced four provider-side constraints
+that `cdk synth` and `tsc` cannot catch, because `aws-cdk-lib` shapes do not
+validate them and FAST never exercises the paths. They are recorded here so the
+next change does not rediscover them.
+
+### 1. The Runtime header allowlist has two rules
+
+`requestHeaderConfiguration.allowlistedHeaders` accepts only:
+
+- `Authorization` — **and only** when the runtime has a `customJWTAuthorizer`.
+  This runtime is IAM SigV4, so listing it fails `CreateRuntime` with
+  *"Authorization header can be specified in requestHeaderAllowlist only when
+  runtime is set up with customJWTAuthorizer"*.
+- `X-Amzn-Bedrock-AgentCore-Runtime-Custom-*` names.
+
+`X-Amzn-Bedrock-AgentCore-Runtime-User-Id` is **not** an allowlist entry: the
+service sets it from the `runtimeUserId` API parameter. The caller identity is
+therefore carried in `X-Amzn-Bedrock-AgentCore-Runtime-Custom-User-Id`, sent by
+`infra-cdk/lambdas/channel-handler/handler.py` via a botocore `before-sign`
+handler (`invoke_agent_runtime` takes no arbitrary-header argument) and read in
+`patterns/conformity-agent/utils/auth.py`. All three must agree on the name.
+
+`runtimeUserId` is still passed — it is what scopes AgentCore Memory per person.
+
+### 2. `create_policy` takes exactly **one** Cedar statement
+
+Passing a document with several `permit` statements fails with:
+
+```
+ValidationException: When parsing the policy statement, the following errors
+occurred: unexpected token `permit`
+```
+
+The parser stops at the end of the first statement and reports the next. FAST
+ships one statement, so it never hits this. `gateway/policies/policy.cedar`
+needs two — most tools are permitted for either role, `record_validation` is
+expert-only — and collapsing them would change what is authorised.
+
+`infra-cdk/lambdas/cedar-policy/index.py` splits the document on the `;` that
+ends a top-level statement (tracking bracket depth so a nested `;` cannot split
+early) and creates one policy per statement, named
+`{engine_name}_cp_{timestamp}_{index}`. The `_cp` segment is what the delete
+helper keys on, so multi-statement engines stay deletable.
+
+### 3. A failed Create leaks its policy engine
+
+CloudFormation calls `Delete` only on resources whose `Create` returned a
+`PhysicalResourceId`. If the Lambda creates the engine and then fails at policy
+creation, the engine survives — with an immutable, globally-unique name — and
+every later deploy dies immediately with:
+
+```
+ConflictException: Policy engine with the same name already exists
+```
+
+`_get_or_create_policy_engine` therefore looks the engine up by name and adopts
+it, deleting and recreating one stuck in a `*_FAILED` state. The `clientToken`
+is derived from the engine name (uuid5) rather than random, so retries of the
+same create resolve to the same engine.
+
+### 4. Memory's `sessionId` and `actorId` have different character sets
+
+| field | pattern | colon allowed |
+|---|---|---|
+| `sessionId` | `[a-zA-Z0-9][a-zA-Z0-9-_]*` | **no** |
+| `actorId` | `[a-zA-Z0-9][a-zA-Z0-9-_/]*(?::[a-zA-Z0-9-_/]+)*...` | yes |
+
+The synthetic technician actor is `phone:<digits>`, so it is a valid *actor* id
+but an invalid *session* id. `handler.py::_session_id` replaces every character
+outside `[a-zA-Z0-9_-]` with `-` (and guards the first character) while staying
+deterministic, so the same actor always maps to the same conversation. Passing
+the actor id through unchanged is correct — only the session id needs
+sanitising.
+
+---
+
 ## Day-one runbook
 
 ```bash
 # 1. Deploy (CodeBuild does the Docker work — see scripts/README.md)
-python scripts/deploy-with-codebuild.py
+uv run python scripts/deploy-with-codebuild.py
 
 # 2. Seed the expert contact(s) from config.yaml into Cognito + DynamoDB
 uv run scripts/seed-contacts.py
@@ -231,6 +309,14 @@ uv run test-scripts/test-channel.py "status?" \
 
 `test-scripts/test-channel.py --print-event` builds the SNS envelope offline
 with no AWS calls at all.
+
+The seed step creates the Cognito user with a synthetic e-mail username,
+`<phone>@conformity.local`: the user pool is created with
+`UsernameAttributes: ['email']` (FAST's default), so `AdminCreateUser` rejects a
+bare phone number with *"Username should be an email."* Nothing downstream
+depends on the username — the channel handler and Pre-Token Lambda key on the
+Cognito `sub`, which becomes `actor_id` — so the real number stays on the user's
+`phone_number` attribute and on the contacts row's `phone_identity`.
 
 ---
 

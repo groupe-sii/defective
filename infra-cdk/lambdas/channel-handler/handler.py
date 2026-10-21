@@ -128,6 +128,10 @@ def _session_id(actor_id: str) -> str:
 # Runtime invocation
 # ---------------------------------------------------------------------------
 
+class RuntimeReplyError(RuntimeError):
+    """The runtime streamed a failure (or nothing) instead of an answer."""
+
+
 def _invoke_runtime(actor_id: str, text: str, channel: str) -> str:
     """Call the conformity agent and return its final reply text.
 
@@ -194,14 +198,30 @@ def _iter_sse_events(raw: str):
     """Yield the JSON payloads of a Strands AgentCore event stream.
 
     The runtime answers with Server-Sent Events, so each payload line is
-    ``data: {json}`` — not a bare ``{json}`` line. FAST's own frontend client
-    (`frontend/src/lib/agentcore-client/parsers/strands.ts`) is the reference
-    for this format:
+    ``data: {json}`` — not a bare ``{json}`` line.
 
-        data: {"data": "partial text"}                        # text delta
-        data: {"current_tool_use": {...}, "delta": {...}}     # tool use
-        data: {"message": {"role": "user"|"assistant", ...}}  # whole message
-        data: {"result": {"stop_reason": "end_turn"}}         # terminal
+    The format below is what this deployment actually emits (captured from
+    InvokeAgentRuntime against the live runtime):
+
+        data: {"init_event_loop": true}
+        data: {"start": true}
+        data: {"event": {"contentBlockDelta": {"delta": {"text": " How"}}}}
+        data: {"data": "How", "delta": {"text": " How"}, ...}   # delta event
+        data: {"event": {"contentBlockDelta": {"delta": {"text": "!"}}}}
+        data: {"data": "!", "delta": {"text": "!"}, ...}
+        data: {"event": {"messageStop": {"stopReason": "end_turn"}}}
+        data: {"message": {"role": "assistant", "content": [{"text": "..."}]}}
+        data: {"result": "Hello! How can I assist you today?\\n"}  # terminal
+
+    Two details matter and are easy to get wrong (both were observed breaking
+    the reply):
+
+      * ``data`` deltas are per-token and *drop leading whitespace* — a delta
+        whose ``delta.text`` is ``" How"`` arrives as ``data: "How"``.
+        Concatenating ``data`` therefore yields ``Hello!HowcanI...``. Use
+        ``delta.text``, or prefer ``result``.
+      * ``result`` is a plain **string** (not the ``{"stop_reason": ...}`` dict
+        FAST's frontend parser expects) and holds the complete answer.
 
     A non-streaming response (plain JSON body) is also tolerated: if no SSE
     framing is present the whole body is parsed as one object.
@@ -246,35 +266,86 @@ def _iter_sse_events(raw: str):
             yield event
 
 
+def _strip_thinking(text: str) -> str:
+    """Remove ``<thinking>...</thinking>`` blocks from the model's output.
+
+    Nova Pro emits its reasoning inline in the assistant text and the runtime
+    does **not** strip it, so every reply arrives wrapped like::
+
+        <thinking> The user wants ... </thinking>
+
+        I need more information about the pump.
+
+    That reasoning is for the operator, not the technician on WhatsApp, so it is
+    dropped here — everything outside the tags is kept. An unterminated block
+    (the streaming tail can cut one off) is dropped to the end of the string.
+    """
+    without_blocks = re.sub(r"<thinking>.*?</thinking>", "", text, flags=re.DOTALL)
+    # A stray opening tag with no closer means the rest is still reasoning.
+    without_blocks = re.sub(r"<thinking>.*\Z", "", without_blocks, flags=re.DOTALL)
+    return without_blocks.strip()
+
+
 def _extract_reply(raw: str) -> str:
     """Pull the assistant's final text out of the runtime's event stream.
 
-    Prefers the concatenated ``data`` deltas (the streamed assistant text). The
-    terminal ``{"result": {"stop_reason": ...}}`` event carries no text, and
-    ``message`` events can be *user* messages holding tool results — including
-    those would splice internal tool output into what the technician receives,
-    so only assistant text is collected from them, and only as a fallback for
-    runtimes that don't stream deltas.
+    Preference order, most reliable first:
+
+      1. ``{"result": "<full answer>"}`` — the terminal event. The runtime sends
+         a plain **string** here (Fast's frontend parser looks for a
+         ``{"stop_reason": ...}`` dict instead, so it misses it), and it is the
+         complete, correctly-spaced answer.
+      2. Streamed deltas, using ``delta.text`` — **not** ``data``. Both appear
+         on each delta event, but ``data`` is the token with leading whitespace
+         stripped (``" How"`` arrives as ``"How"``), so concatenating ``data``
+         loses every word boundary: ``Hello!HowcanI...``.
+      3. A complete ``message`` event — only when it is an **assistant** message.
+         ``message`` events also carry *user* messages holding tool results, and
+         splicing those into the reply would leak internal tool output to the
+         technician.
+
+    ``<thinking>`` blocks are stripped from whichever source wins.
+
+    Raises ``RuntimeReplyError`` when the stream reports a failure and yields no
+    text. The runtime signals mid-stream errors (e.g. the model producing an
+    invalid tool-use sequence) with ``{"status": "error", "error": ...}`` /
+    ``force_stop`` and no ``result``, which would otherwise be dispatched as an
+    empty message to the technician.
     """
+    result_text = ""
     streamed = ""
     messages_text = ""
+    error_text = ""
 
     for event in _iter_sse_events(raw):
         if not isinstance(event, dict):
             continue
 
-        # Primary: streamed assistant text deltas.
-        if isinstance(event.get("data"), str):
-            streamed += event["data"]
+        # 1. Terminal result. A string is the whole answer; a dict (as FAST's
+        #    frontend parser expects) carries no text and is ignored.
+        if isinstance(event.get("result"), str) and event["result"].strip():
+            result_text = event["result"]
 
-        # Fallback: a complete assistant message (no deltas seen).
+        # 2. Streamed assistant text deltas, spaced correctly.
+        delta = event.get("delta")
+        if isinstance(delta, dict) and isinstance(delta.get("text"), str):
+            streamed += delta["text"]
+
+        # 3. Complete assistant message (fallback for a non-streaming runtime).
         message = event.get("message")
         if isinstance(message, dict) and message.get("role") == "assistant":
             for block in message.get("content") or []:
                 if isinstance(block, dict) and isinstance(block.get("text"), str):
                     messages_text += block["text"]
 
-    return (streamed or messages_text).strip()
+        # 4. Mid-stream failure, recorded in case no text arrives.
+        if event.get("status") == "error" and isinstance(event.get("error"), str):
+            error_text = event["error"]
+
+    reply = _strip_thinking(result_text or streamed or messages_text)
+    if not reply:
+        raise RuntimeReplyError(error_text or "the agent returned an empty reply")
+    return reply
 
 
 # ---------------------------------------------------------------------------
@@ -313,7 +384,16 @@ def process_record(record: dict):
 
         try:
             reply_text = _invoke_runtime(actor_id, message.text, message.channel)
-        except Exception as err:
+        except RuntimeReplyError as err:
+            # The runtime ran but produced no usable answer (e.g. Nova Pro's
+            # intermittent invalid-tool-use stream error). Say so plainly rather
+            # than sending an empty message, and log the model's own reason.
+            logger.error("Runtime produced no reply for %s: %s", actor_id, err)
+            reply_text = (
+                "Sorry, I could not process that just now. "
+                "Please send it again in a moment."
+            )
+        except Exception:
             logger.exception("Agent invocation failed for %s", actor_id)
             reply_text = "Sorry, something went wrong while handling your message."
 
