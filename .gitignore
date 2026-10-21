@@ -1,31 +1,68 @@
+# --- Python / packaging -----------------------------------------------------
 *.whl
+__pycache__
+*.pyc
+.venv
 .env
 .env_runtime
 .ipynb_checkpoints
 .vscode
-__pycache__
 .DS_Store
-.venv
 .web
 boto3/
 tmp-img/
-lambda.zip
 local.txt
-req-linux.txt
 binaries/
-tests/
-package/
-
-# exclude everything
-log/*
-# exception to the rule
-!log/.gitkeep
-
-sample_assets/
-docs/
-python_binaries/
-python/
 layer/
-local.txt
+python/
+python_binaries/
+sample_assets/
+
+# --- POC build artifacts (poc-legacy/) --------------------------------------
+# The pre-AgentCore POC's packaging outputs. Kept out of git; the source under
+# poc-legacy/lambdas/ and poc-legacy/template.yaml IS tracked.
+lambda.zip
+req-linux.txt
+package/
+log/*
+!log/.gitkeep
 pack_and_deploy-bkp.sh
 template-bkp.yaml
+
+# --- FAST (upstream) build/runtime artifacts --------------------------------
+.aws-sam
+build.toml
+model.tar.gz
+.checksum
+.checksums/
+.build_checksum
+.lib_checksum
+dist/
+.sav/
+.delete/
+.data/
+*.egg-info/
+build/
+*.code-workspace
+.ruff_cache
+.kiro
+rvl_cdip_*
+notebooks/examples/data
+.idea/
+.dsr/
+**/cdk.out
+**/.envrc
+**/node_modules
+**/.vite
+frontend/public/aws-exports.json
+scripts/zip-artifact/
+public/
+.mkdocs/public/
+
+# --- AgentCore Runtime container artifacts ----------------------------------
+# The deployment section of infra-cdk/README.md documents running
+# `python docker/build.py` locally to test the agent image. Its output lives in
+# docker/ and must never be committed.
+docker/*.tar
+docker/*.tar.gz
+docker/.build/

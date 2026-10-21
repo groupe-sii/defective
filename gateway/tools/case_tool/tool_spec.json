@@ -1,0 +1,91 @@
+[
+  {
+    "name": "create_case",
+    "description": "Register a new non-conformity case with a DRAFT procedure that awaits expert validation. Call after search_ncr_history and once the draft procedure and contractor e-mail are known.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "equipment": {
+          "type": "string",
+          "description": "Equipment id/type, e.g. 'centrifugal pump P-101'."
+        },
+        "description": {
+          "type": "string",
+          "description": "Observed non-conformity: what, where, when."
+        },
+        "procedure": {
+          "type": "string",
+          "description": "The draft procedure as numbered steps."
+        },
+        "contractor_email": {
+          "type": "string",
+          "description": "Contractor/provider e-mail that will receive the validated procedure."
+        },
+        "location": {
+          "type": "string",
+          "description": "Where the equipment is (optional)."
+        },
+        "urgency": {
+          "type": "string",
+          "description": "low / medium / high (optional)."
+        },
+        "kb_references": {
+          "type": "string",
+          "description": "Comma-separated refs/sources of the similar past reports used (optional)."
+        }
+      },
+      "required": ["equipment", "description", "procedure"]
+    }
+  },
+  {
+    "name": "get_case",
+    "description": "Get a non-conformity case by id: status, draft procedure, validation decision and contractor e-mail state. Technicians only see their own cases; the conformity expert can see any case.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "case_id": {
+          "type": "string",
+          "description": "The case id, e.g. NC-20261021-ab12cd."
+        }
+      },
+      "required": ["case_id"]
+    }
+  },
+  {
+    "name": "list_cases",
+    "description": "List non-conformity cases. The conformity expert gets the validation queue (status PENDING_VALIDATION by default); a technician gets their own cases, optionally filtered by status.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "description": "Optional status filter: PENDING_VALIDATION, APPROVED, REJECTED or CONTRACTOR_NOTIFIED."
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "record_validation",
+    "description": "EXPERT ONLY: record the conformity expert's validation decision on a case. Refused for non-experts by both the Cedar policy at the Gateway and this tool.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "case_id": {
+          "type": "string",
+          "description": "The case being validated."
+        },
+        "decision": {
+          "type": "string",
+          "description": "APPROVED or REJECTED.",
+          "enum": ["APPROVED", "REJECTED"]
+        },
+        "comment": {
+          "type": "string",
+          "description": "The expert's justification/comment (optional but recommended)."
+        }
+      },
+      "required": ["case_id", "decision"]
+    }
+  }
+]

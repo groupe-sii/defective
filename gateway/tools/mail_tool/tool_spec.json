@@ -1,0 +1,42 @@
+[
+  {
+    "name": "send_contractor_email",
+    "description": "Send the validated procedure e-mail to the equipment contractor/provider. Only allowed once the case status is APPROVED by the conformity expert; the recipient is the contractor e-mail stored on the case. In mock mode (default) the e-mail is logged instead of sent, and the case still moves to CONTRACTOR_NOTIFIED.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "case_id": {
+          "type": "string",
+          "description": "The approved case the e-mail refers to."
+        },
+        "subject": {
+          "type": "string",
+          "description": "E-mail subject, include the case id."
+        },
+        "body": {
+          "type": "string",
+          "description": "E-mail body with the final validated procedure."
+        }
+      },
+      "required": ["case_id", "subject", "body"]
+    }
+  },
+  {
+    "name": "request_expert_validation",
+    "description": "Notify the conformity expert that a case awaits validation of its draft procedure. Call right after create_case.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "case_id": {
+          "type": "string",
+          "description": "The case awaiting validation."
+        },
+        "summary": {
+          "type": "string",
+          "description": "One-line summary of the draft procedure for the expert."
+        }
+      },
+      "required": ["case_id"]
+    }
+  }
+]

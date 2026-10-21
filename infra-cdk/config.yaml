@@ -1,0 +1,82 @@
+stack_name_base: conformity-agent
+
+# Optional: Set to automatically create an admin user and email credentials
+# If not provided, you'll need to manually create users via AWS Console
+admin_user_email: # Example: admin@example.com
+
+backend:
+  agent_name: ConformityAgent # Name for the agent runtime (a-z, A-Z, 0-9, _)
+  pattern: conformity-agent # See patterns/ for available options
+  # Pattern prefix determines the frontend parser:
+  #   agui-*      → AG-UI parser      (e.g. agui-strands-agent)
+  #   strands-*   → Strands parser    (e.g. strands-single-agent)
+  #   langgraph-* → LangGraph parser  (e.g. langgraph-single-agent)
+  #   claude-*    → Claude parser     (e.g. claude-agent-sdk-single-agent)
+  # The folder name must match exactly and start with the desired parser prefix.
+  # NOTE: conformity-agent uses the Strands parser conventions (tools/ + basic_agent.py).
+  deployment_type: docker # Available deployment types: docker (default), zip (not supported for claude-agent-sdk)
+  network_mode: PUBLIC # Available network modes: PUBLIC (default), VPC
+
+  # Long-term memory uses a SemanticMemoryStrategy to extract and store facts across sessions.
+  # This incurs additional costs: $0.75/1,000 records stored + $0.50/1,000 retrieval calls.
+  # Set to true when you want to try persistent cross-session memory, which is keyed off of the
+  # Cognito userId.
+  use_long_term_memory: false
+  ltm_top_k: 10             # Number of facts to retrieve per turn (default: 10)
+  ltm_relevance_score: 0.3  # Minimum similarity threshold for retrieval (default: 0.3)
+
+  # MCP server discovery + auto-connect from an AWS Agent Registry.
+  # Lightweight: no DynamoDB, no UI, no per-user preferences. When enabled, the
+  # agent lists the registry's Approved MCP records at runtime and connects to
+  # each public streamable-HTTP server as a live MCP client (their tools become
+  # directly callable). See docs/MCP_REGISTRY_DISCOVERY.md.
+  mcp_registry:
+    enabled: false        # Default off. Set true to activate discovery + auto-connect.
+    registry_id: ""       # ARN or id of the AWS Agent Registry. Required when enabled.
+
+  # VPC configuration - required when network_mode is VPC
+  # Your VPC must have the necessary VPC endpoints for AWS services.
+  # See docs/DEPLOYMENT.md for the full list of required VPC endpoints.
+  # vpc:
+  #   vpc_id: vpc-0abc1234def56789a
+  #   subnet_ids:
+  #     - subnet-aaaa1111bbbb2222c
+  #     - subnet-cccc3333dddd4444e
+  #   security_group_ids:  # Optional - a default SG is created if omitted
+  #     - sg-0abc1234def56789a
+
+# ============================================================================
+# Conformity-assistant domain configuration
+# ============================================================================
+conformity:
+  # Region the whole conformity stack deploys to. MUST match CDK_DEFAULT_REGION
+  # at deploy time (AgentCore Runtime, Gateway, Memory and the KB all live here).
+  region: eu-west-1
+
+  # Bedrock model used by the agent. eu.amazon.nova-pro-v1:0 is an inference
+  # profile valid in eu-west-1 (us.* profiles are rejected there).
+  model_id: eu.amazon.nova-pro-v1:0
+
+  # Bedrock Knowledge Base holding past Non-Conformity Reports (NCRs).
+  # hackaton-nci is currently image-only: tools/ncr.py reads the caption from
+  # the x-amz-bedrock-kb-description metadata key.
+  knowledge_base_id: GXY5L19KJX
+
+  # Locale of the agent prompts. Supported: en_US, pt_BR, fr_FR.
+  locale: en_US
+
+  # Channels answered in demo mode (CSV). A channel listed here logs the reply
+  # (MOCK_<CHANNEL>: reply to <identity>: ...) instead of sending it. Remove a
+  # channel to send for real (requires the channel to be provisioned).
+  mock_channels: whatsapp,sms,email,rcs
+
+  # When true, send_contractor_email logs (MOCK_EMAIL ...) instead of using SES.
+  mock_email: true
+
+  # Outbound e-mail envelope for the contractor notification.
+  contractor_email_from: noreply@example.com
+
+  # Expert phone numbers (digits only), used to seed the contacts mapping table.
+  # These are the numbers allowed to approve/reject a drafted procedure.
+  expert_contacts:
+    - "5511999998888"
