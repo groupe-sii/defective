@@ -1372,6 +1372,12 @@ export class BackendConstruct extends Construct {
     const channelHandler = new PythonFunction(this, "ChannelHandlerLambda", {
       functionName: `${config.stack_name_base}-channel-handler`,
       runtime: lambda.Runtime.PYTHON_3_13,
+      // ARM_64 keeps the bundling Docker build on the same architecture as the
+      // CodeBuild host (Graviton) and matches FAST's other PythonFunctions
+      // (feedback, cedar-policy). Leaving it at the x86_64 default makes CDK
+      // build with --platform linux/amd64, which cannot exec on an arm64 host:
+      // "exec /bin/sh: exec format error".
+      architecture: lambda.Architecture.ARM_64,
       entry: path.join(__dirname, "..", "lambdas", "channel-handler"),
       index: "handler.py",
       handler: "lambda_handler",
