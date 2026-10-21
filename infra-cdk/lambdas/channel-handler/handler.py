@@ -24,6 +24,7 @@ SPDX-License-Identifier: Apache-2.0
 import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
 
 import boto3
@@ -95,9 +96,31 @@ def _session_id(actor_id: str) -> str:
 
     Mirrors the POC's 'one row per identity + day' behaviour, but as a runtime
     session id. Must be at least 33 characters for AgentCore.
+
+    The id is also used as an AgentCore *Memory* sessionId, which is validated
+    against:
+
+        [a-zA-Z0-9][a-zA-Z0-9-_]*
+
+    So it may contain only letters, digits, hyphen and underscore, and must not
+    start with a separator. That rules out the ``phone:<number>`` synthetic actor
+    id verbatim — the colon is rejected:
+
+        ValidationException: Value at 'sessionId' failed to satisfy constraint:
+        Member must satisfy regular expression pattern: [a-zA-Z0-9][a-zA-Z0-9-_]*
+
+    Any disallowed character is therefore replaced with ``-``, which keeps the id
+    deterministic (the same actor always maps to the same session) while staying
+    valid. Hashing is deliberately avoided: a readable id is worth more when
+    debugging Memory.
     """
     day = datetime.now(timezone.utc).strftime("%Y%m%d")
-    base = f"{actor_id}-{day}"
+    safe = re.sub(r"[^a-zA-Z0-9_-]", "-", str(actor_id))
+    # Guard the first character: the pattern forbids leading separators.
+    if not safe or not safe[0].isalnum():
+        safe = f"a{safe}"
+    base = f"{safe}-{day}"
+    # The 33-char pad is what satisfies AgentCore's minimum session-id length.
     return (base + "-" + "0" * 33)[:128]
 
 
