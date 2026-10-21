@@ -2,15 +2,16 @@
 Custom Resource Lambda for managing AgentCore Gateway Cedar Policy lifecycle.
 
 This Lambda is invoked by CloudFormation during stack deployment to manage
-a Policy Engine and Cedar Policy for AgentCore Gateway. It handles the full
+a Policy Engine and Cedar Policies for AgentCore Gateway. It handles the full
 three-step process:
   1. Create a Policy Engine and wait for ACTIVE status
-  2. Create a Cedar Policy inside the engine and wait for ACTIVE status
+  2. Create the Cedar Policies inside the engine and wait for ACTIVE status
+     (one policy per statement in the document — see _split_cedar_statements)
   3. Attach the Policy Engine to the Gateway and wait for READY status
 
 CloudFormation Events:
-- Create: Creates policy engine, cedar policy, and attaches to gateway
-- Update: Deletes all existing managed policies, creates a new one with the
+- Create: Creates policy engine, cedar policies, and attaches to gateway
+- Update: Deletes all existing managed policies, creates new ones with the
   updated document, and verifies the policy engine is still attached to the
   gateway. Uses a shared helper (_delete_managed_policies) that handles stale
   policy IDs from the PhysicalResourceId by listing and deleting all policies
@@ -75,13 +76,125 @@ def handler(event: dict, context: dict) -> dict:
         raise
 
 
+def _split_cedar_statements(policy_document: str) -> list:
+    """
+    Split a Cedar policy document into individual statements.
+
+    The AgentCore ``create_policy`` API takes ONE Cedar statement per policy:
+
+        definition={"cedar": {"statement": "<a single permit/forbid>"}}
+
+    Passing a document with several statements makes the parser stop at the end
+    of the first one and report the next as a syntax error:
+
+        ValidationException: unexpected token `permit`
+
+    Our policy needs two statements with *different* conditions (most tools are
+    permitted for either role; ``record_validation`` is expert-only), so the
+    document cannot be collapsed into one statement without changing what it
+    authorises. Instead the document is split here and each statement becomes
+    its own policy in the same engine.
+
+    The CDK strips ``//`` comment lines before passing the document, so the only
+    tokens at the top level are the statements themselves. A statement ends at
+    the ``;`` that terminates its top-level ``when`` clause. Braces and brackets
+    are tracked so a ``;`` inside a nested block cannot end a statement early.
+
+    Args:
+        policy_document: Full Cedar document (comments already stripped).
+
+    Returns:
+        List of statement strings, each terminated by ``;``. Empty if the
+        document contains no statements.
+    """
+    statements = []
+    current = []
+    depth = 0  # nesting of ( ) and [ ] and { }
+    for char in policy_document:
+        current.append(char)
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == ";" and depth == 0:
+            statement = "".join(current).strip()
+            if statement:
+                statements.append(statement)
+            current = []
+
+    # Trailing text without a terminating ';' is not a valid statement; surface
+    # it rather than silently dropping a policy the operator expected to apply.
+    leftover = "".join(current).strip()
+    if leftover:
+        raise ValueError(
+            f"Cedar policy document has an unterminated statement (missing ';'): "
+            f"{leftover[:120]!r}"
+        )
+
+    return statements
+
+
+def _create_policies(
+    policy_engine_id: str, policy_document: str, description: str, engine_name: str
+) -> list:
+    """
+    Create one AgentCore policy per Cedar statement in the document.
+
+    See ``_split_cedar_statements`` for why one policy per statement is required.
+
+    Policy names follow ``{engine_name}_cp_{timestamp}_{index}``. The
+    ``_cp`` segment matters: ``_delete_managed_policies`` uses the
+    ``{engine_name}_cp`` prefix to find and remove every policy this Custom
+    Resource owns, so the index suffix keeps multi-statement engines deletable.
+
+    Args:
+        policy_engine_id: Target Policy Engine.
+        policy_document: Full Cedar document (may hold several statements).
+        description: Policy description.
+        engine_name: Used to build managed policy names.
+
+    Returns:
+        List of created policy IDs, in document order.
+    """
+    statements = _split_cedar_statements(policy_document)
+    if not statements:
+        raise ValueError("Cedar policy document contains no statements")
+
+    logger.info(f"Cedar document holds {len(statements)} statement(s)")
+
+    # The AgentCore API enforces a 48-character limit on policy names; the
+    # timestamp + index suffix keeps them unique and short.
+    timestamp = int(time.time())
+    policy_ids = []
+
+    for index, statement in enumerate(statements):
+        policy_name = f"{engine_name}_cp_{timestamp}_{index}"
+        logger.info(f"Creating Cedar Policy {index}: {policy_name}")
+        policy_response = client.create_policy(
+            policyEngineId=policy_engine_id,
+            name=policy_name,
+            description=description,
+            definition={"cedar": {"statement": statement}},
+        )
+        policy_id = policy_response["policyId"]
+        policy_ids.append(policy_id)
+        logger.info(f"Cedar Policy {index} created: {policy_id}")
+
+        # Wait for each policy to become ACTIVE using official waiter.
+        waiter = client.get_waiter("policy_active")
+        waiter.wait(policyEngineId=policy_engine_id, policyId=policy_id)
+        logger.info(f"Cedar Policy {policy_id} is now ACTIVE")
+
+    return policy_ids
+
+
 def handle_create(props: dict) -> dict:
     """
-    Create Policy Engine, Cedar Policy, and attach to Gateway.
+    Create Policy Engine, Cedar Policies, and attach to Gateway.
 
     Steps:
       1. Create Policy Engine -> wait for ACTIVE (official waiter)
-      2. Create Cedar Policy -> wait for ACTIVE (official waiter)
+      2. Create one Cedar Policy per statement -> wait for ACTIVE (official waiter)
       3. Attach Policy Engine to Gateway -> wait for READY (custom polling)
 
     Args:
@@ -115,30 +228,18 @@ def handle_create(props: dict) -> dict:
     engine_details = client.get_policy_engine(policyEngineId=policy_engine_id)
     policy_engine_arn = engine_details["policyEngineArn"]
 
-    # Step 2: Create Cedar Policy
-    # Policy name format: {engine_name}_cp_{timestamp}
-    # The AgentCore API enforces a 48-character limit on policy names.
-    policy_name = f"{engine_name}_cp_{int(time.time())}"
-    logger.info(f"Creating Cedar Policy: {policy_name}")
-    policy_response = client.create_policy(
-        policyEngineId=policy_engine_id,
-        name=policy_name,
-        description=description,
-        definition={"cedar": {"statement": policy_document}},
+    # Step 2: Create one Cedar Policy per statement
+    policy_ids = _create_policies(
+        policy_engine_id, policy_document, description, engine_name
     )
-    policy_id = policy_response["policyId"]
-    logger.info(f"Cedar Policy created: {policy_id}")
-
-    # Wait for Cedar Policy to become ACTIVE using official waiter
-    logger.info(f"Waiting for Cedar Policy {policy_id} to become ACTIVE...")
-    waiter = client.get_waiter("policy_active")
-    waiter.wait(policyEngineId=policy_engine_id, policyId=policy_id)
-    logger.info(f"Cedar Policy {policy_id} is now ACTIVE")
+    # First ID is what older single-statement deployments exposed; keep it in the
+    # PhysicalResourceId so Update/Delete have a concrete ID to start from.
+    policy_id = policy_ids[0]
 
     # Step 3: Attach Policy Engine to Gateway
     _attach_policy_engine_to_gateway(gateway_id, policy_engine_arn)
 
-    # Encode both IDs in PhysicalResourceId for use in Update/Delete
+    # Encode engine + first policy ID in PhysicalResourceId for use in Update/Delete
     physical_id = f"{policy_engine_id}|{policy_id}"
 
     return {
@@ -146,6 +247,7 @@ def handle_create(props: dict) -> dict:
         "Data": {
             "PolicyEngineId": policy_engine_id,
             "PolicyId": policy_id,
+            "PolicyIds": ",".join(policy_ids),
             "PolicyEngineArn": policy_engine_arn,
         },
     }
@@ -188,26 +290,13 @@ def handle_update(event: dict, props: dict) -> dict:
     # prior updates.
     _delete_managed_policies(policy_engine_id, old_policy_id, props)
 
-    # Create new policy
-    # Policy name format: {engine_name}_cp_{timestamp}
-    # The AgentCore API enforces a 48-character limit on policy names.
+    # Create new policies — one per Cedar statement (see _split_cedar_statements).
     engine_name = props["PolicyEngineName"]
-    policy_name = f"{engine_name}_cp_{int(time.time())}"
-    logger.info(f"Creating new Cedar Policy: {policy_name}")
-    policy_response = client.create_policy(
-        policyEngineId=policy_engine_id,
-        name=policy_name,
-        description=description,
-        definition={"cedar": {"statement": policy_document}},
+    new_policy_ids = _create_policies(
+        policy_engine_id, policy_document, description, engine_name
     )
-    new_policy_id = policy_response["policyId"]
-    logger.info(f"New Cedar Policy created: {new_policy_id}")
-
-    # Wait for new policy to become ACTIVE using official waiter
-    logger.info(f"Waiting for Cedar Policy {new_policy_id} to become ACTIVE...")
-    waiter = client.get_waiter("policy_active")
-    waiter.wait(policyEngineId=policy_engine_id, policyId=new_policy_id)
-    logger.info(f"Cedar Policy {new_policy_id} is now ACTIVE")
+    new_policy_id = new_policy_ids[0]
+    logger.info(f"New Cedar Policies created: {new_policy_ids}")
 
     # Verify the Policy Engine is still attached to the Gateway.
     # A previous failed deployment rollback or manual change may have detached it.
@@ -235,6 +324,7 @@ def handle_update(event: dict, props: dict) -> dict:
         "Data": {
             "PolicyEngineId": policy_engine_id,
             "PolicyId": new_policy_id,
+            "PolicyIds": ",".join(new_policy_ids),
         },
     }
 
