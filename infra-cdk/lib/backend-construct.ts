@@ -1028,8 +1028,6 @@ export class BackendConstruct extends Construct {
       ),
     })
 
-    const gatewayTarget = ncrTarget
-
     // Ensure proper creation order
     gateway.node.addDependency(this.machineClient)
     gateway.node.addDependency(gatewayRole)
@@ -1046,21 +1044,28 @@ export class BackendConstruct extends Construct {
     // Resource Lambda is used (same pattern as the OAuth2 Credential Provider).
     //
     // The Gateway's JWT Authorizer maps M2M JWT claims to Cedar principal tags:
-    //   JWT claim "department" → principal.getTag("department")
-    //   JWT claim "role"       → principal.getTag("role")
-    //   JWT claim "user_id"    → principal.getTag("user_id")
+    //   JWT claim "role"    → principal.getTag("role")
+    //   JWT claim "user_id" → principal.getTag("user_id")
     // These are CUSTOM claims injected by the V3 Pre-Token Lambda, not standard
-    // JWT claims. You can define custom claim names and match them in Cedar.
+    // JWT claims. This fork reads "role" from the contacts table (technician or
+    // expert) — see infra-cdk/lambdas/pretoken-v3/index.py.
     //
     // The Cedar action name format is: "<TargetName>___<tool_name>" (triple underscore).
-    // Tool name comes from tool_spec.json: "text_analysis_tool"
-    // Target name is "sample-tool-target"
+    // THIS FORK's targets (see createAgentCoreGateway) are:
+    //   ncr-tool-target   -> search_ncr_history
+    //   case-tool-target  -> create_case, get_case, list_cases, record_validation
+    //   mail-tool-target  -> send_contractor_email, request_expert_validation
+    // Renaming a target here without editing gateway/policies/policy.cedar
+    // silently denies every call on that target (Cedar is deny-by-default).
     //
-    // THREE POLICY VERSIONS FOR DEMO TESTING:
-    // - Version 1: Guest has full access — all departments can use tools
-    // - Version 2: Guest denied — only finance/engineering can use tools
+    // The policy is two statements, both reading the "role" tag injected by the
+    // Pre-Token Lambda from the contacts table:
+    //   - technicians and experts may use every tool EXCEPT record_validation;
+    //   - only experts may call record_validation.
+    // Because Cedar hides denied tools from an agent session's tools/list, a
+    // technician never even sees record_validation.
     //
-    // To switch versions: edit gateway/policies/policy.cedar, then run `cdk deploy`
+    // To change the policy: edit gateway/policies/policy.cedar, then `cdk deploy`.
     //
     // CEDAR POLICY SYNTAX NOTES:
     // - Each create_policy call creates one policy containing one Cedar statement.
@@ -1069,7 +1074,7 @@ export class BackendConstruct extends Construct {
     //   within a single statement.
     // - Cedar is deny-by-default: if no permit statement matches a request, it is
     //   automatically denied. An explicit forbid statement is not needed to block
-    //   access — simply omit the department from the permit's OR conditions.
+    //   access — simply omit the action from the permit's action list.
     // - This template creates a single policy per deploy. To add multiple policies,
     //   update the Custom Resource Lambda to call create_policy() once per statement.
 
@@ -1158,12 +1163,12 @@ export class BackendConstruct extends Construct {
         // Policy name format: {PolicyEngineName}_cp_{timestamp}
         // The AgentCore API enforces a 48-character limit on policy names.
         PolicyEngineName: `${config.stack_name_base.replace(/-/g, "_")}_policy_engine`,
-        Description: "Department-based tool access control for AgentCore Policy demo",
+        Description: "Conformity tool access control: record_validation is expert-only",
       },
     })
 
     // Policy must be created after the Gateway and its targets are ready
-    cedarPolicy.node.addDependency(gatewayTarget)
+    cedarPolicy.node.addDependency(ncrTarget)
     cedarPolicy.node.addDependency(caseTarget)
     cedarPolicy.node.addDependency(mailTarget)
 
@@ -1191,8 +1196,8 @@ export class BackendConstruct extends Construct {
     })
 
     new cdk.CfnOutput(this, "GatewayTargetId", {
-      value: gatewayTarget.targetId,
-      description: "AgentCore Gateway Target ID (NCR search)",
+      value: ncrTarget.targetId,
+      description: "AgentCore Gateway Target ID (NCR search target)",
     })
 
     new cdk.CfnOutput(this, "NcrToolLambdaArn", {
