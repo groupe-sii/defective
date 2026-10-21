@@ -1,0 +1,31 @@
+{
+  "dataset": "DefectSpectrum/Defect_Spectrum",
+  "subset": "DS-MVTec/cable/image",
+  "total_records": 150,
+  "synthetic_ncr_records": 92,
+  "good_reference_records_without_ncr": 58,
+  "class_counts": {
+    "bent_wire": 13,
+    "cable_swap": 12,
+    "combined": 11,
+    "cut_inner_insulation": 14,
+    "cut_outer_insulation": 10,
+    "good": 58,
+    "missing_cable": 12,
+    "missing_wire": 10,
+    "poke_insulation": 10
+  },
+  "ncr_counts_by_class": {
+    "bent_wire": 13,
+    "cable_swap": 12,
+    "combined": 11,
+    "cut_inner_insulation": 14,
+    "cut_outer_insulation": 10,
+    "good": 0,
+    "missing_cable": 12,
+    "missing_wire": 10,
+    "poke_insulation": 10
+  },
+  "source_inventory_verified_from_huggingface_directory_listing": true,
+  "note": "File enumeration uses 000.png onward per class directory; each narrative is synthetic and generated from the class label, not from a human-verified inspection of every image."
+}
