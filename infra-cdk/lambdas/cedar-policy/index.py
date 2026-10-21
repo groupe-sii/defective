@@ -188,14 +188,102 @@ def _create_policies(
     return policy_ids
 
 
+def _get_or_create_policy_engine(engine_name: str, gateway_id: str) -> tuple:
+    """
+    Return (policy_engine_id, policy_engine_arn), creating the engine if needed.
+
+    Reusing an existing engine matters because a failed Create leaks one: the
+    Custom Resource Lambda creates the engine, then can fail at policy creation.
+    CloudFormation's rollback then calls Delete only if Create returned a
+    PhysicalResourceId — and it did not, because Create never returned. The
+    engine survives, and the next deploy fails immediately with:
+
+        ConflictException when calling the CreatePolicyEngine operation:
+        Policy engine with the same name already exists
+
+    (observed in practice). Policy engine names are immutable and unique, so the
+    only way to converge is to find an existing engine by name and adopt it.
+    An engine in a terminal-failure state is deleted and recreated.
+
+    Args:
+        engine_name: Immutable engine name (also the managed-policy name prefix).
+        gateway_id: Used only for the engine description.
+
+    Returns:
+        (policy_engine_id, policy_engine_arn)
+    """
+    existing = None
+    try:
+        listed = client.list_policy_engines(maxResults=100)
+        for engine in listed.get("policyEngines", []):
+            if engine.get("name") == engine_name:
+                existing = engine
+                break
+    except Exception as e:
+        logger.warning(f"Could not list policy engines: {e}")
+
+    if existing:
+        engine_id = existing["policyEngineId"]
+        status = existing.get("status")
+        logger.info(f"Found existing Policy Engine {engine_id} (status={status})")
+
+        if status in ("CREATE_FAILED", "DELETE_FAILED", "UPDATE_FAILED"):
+            # Unusable — remove it so it can be recreated cleanly.
+            logger.warning(f"Existing engine is in {status}; deleting and recreating")
+            try:
+                client.delete_policy_engine(policyEngineId=engine_id)
+                _wait_for_policy_engine_deleted(engine_id)
+            except Exception as e:
+                logger.warning(f"Could not delete failed engine {engine_id}: {e}")
+        else:
+            # CREATING/ACTIVE/UPDATING: usable. Wait for a stable state.
+            if status != "ACTIVE":
+                logger.info("Waiting for existing engine to become ACTIVE...")
+                client.get_waiter("policy_engine_active").wait(policyEngineId=engine_id)
+            details = client.get_policy_engine(policyEngineId=engine_id)
+            logger.info(f"Adopting existing Policy Engine {engine_id}")
+            return engine_id, details["policyEngineArn"]
+
+    # Create a new engine. A random clientToken gives no idempotency, so it is a
+    # stable token derived from the immutable name — retries of the same create
+    # resolve to the same engine instead of colliding.
+    logger.info(f"Creating Policy Engine: {engine_name}")
+    engine_response = client.create_policy_engine(
+        name=engine_name,
+        description=f"Policy engine for gateway {gateway_id}",
+        clientToken=str(uuid.uuid5(uuid.NAMESPACE_DNS, f"agentcore:{engine_name}")),
+    )
+    policy_engine_id = engine_response["policyEngineId"]
+    logger.info(f"Policy Engine created: {policy_engine_id}")
+
+    # Wait for Policy Engine to become ACTIVE using official waiter
+    logger.info(f"Waiting for Policy Engine {policy_engine_id} to become ACTIVE...")
+    client.get_waiter("policy_engine_active").wait(policyEngineId=policy_engine_id)
+    logger.info(f"Policy Engine {policy_engine_id} is now ACTIVE")
+
+    details = client.get_policy_engine(policyEngineId=policy_engine_id)
+    return policy_engine_id, details["policyEngineArn"]
+
+
+def _wait_for_policy_engine_deleted(policy_engine_id: str) -> None:
+    """Wait for a Policy Engine to finish deleting, tolerating a missing waiter."""
+    try:
+        client.get_waiter("policy_engine_deleted").wait(policyEngineId=policy_engine_id)
+    except Exception as e:
+        logger.warning(f"policy_engine_deleted waiter unavailable/failed: {e}")
+
+
 def handle_create(props: dict) -> dict:
     """
     Create Policy Engine, Cedar Policies, and attach to Gateway.
 
     Steps:
-      1. Create Policy Engine -> wait for ACTIVE (official waiter)
+      1. Get or create the Policy Engine -> ACTIVE (official waiter)
       2. Create one Cedar Policy per statement -> wait for ACTIVE (official waiter)
       3. Attach Policy Engine to Gateway -> wait for READY (custom polling)
+
+    Idempotent on the engine: an engine leaked by a previous failed Create is
+    adopted by name rather than colliding (see _get_or_create_policy_engine).
 
     Args:
         props: ResourceProperties from CloudFormation event.
@@ -208,25 +296,10 @@ def handle_create(props: dict) -> dict:
     description = props.get("Description", "Cedar policy for AgentCore Gateway")
     engine_name = props["PolicyEngineName"]
 
-    # Step 1: Create Policy Engine
-    logger.info(f"Creating Policy Engine: {engine_name}")
-    engine_response = client.create_policy_engine(
-        name=engine_name,
-        description=f"Policy engine for gateway {gateway_id}",
-        clientToken=str(uuid.uuid4()),
+    # Step 1: Get or create the Policy Engine
+    policy_engine_id, policy_engine_arn = _get_or_create_policy_engine(
+        engine_name, gateway_id
     )
-    policy_engine_id = engine_response["policyEngineId"]
-    logger.info(f"Policy Engine created: {policy_engine_id}")
-
-    # Wait for Policy Engine to become ACTIVE using official waiter
-    logger.info(f"Waiting for Policy Engine {policy_engine_id} to become ACTIVE...")
-    waiter = client.get_waiter("policy_engine_active")
-    waiter.wait(policyEngineId=policy_engine_id)
-    logger.info(f"Policy Engine {policy_engine_id} is now ACTIVE")
-
-    # Get the Policy Engine ARN for attaching to gateway
-    engine_details = client.get_policy_engine(policyEngineId=policy_engine_id)
-    policy_engine_arn = engine_details["policyEngineArn"]
 
     # Step 2: Create one Cedar Policy per statement
     policy_ids = _create_policies(
