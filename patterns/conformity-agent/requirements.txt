@@ -1,7 +1,13 @@
 # Conformity assistant dependencies (AgentCore Runtime container).
-# Mirrors patterns/strands-single-agent/requirements.txt (the FAST baseline) —
-# kept in sync with the pyproject.toml agent extras.
-strands-agents==1.32.0
+# Mirrors patterns/strands-single-agent/requirements.txt (the FAST baseline).
+#
+# strands-agents is pinned to satisfy bedrock-agentcore's own constraint:
+# bedrock-agentcore==1.4.7 declares strands-agents>=1.56.0 for its strands
+# integration (extra "strands-agents"), so the FAST baseline's ==1.32.0 pin
+# conflicts with it. An inconsistent resolve is exactly the kind that produces
+# version-specific ConverseStream faults, so both are pinned as a compatible
+# pair rather than inherited unchanged.
+strands-agents==1.61.1
 bedrock-agentcore==1.4.7
 mcp==1.28.1
 PyJWT[crypto]==2.15.0

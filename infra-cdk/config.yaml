@@ -65,6 +65,17 @@ conformity:
   # Locale of the agent prompts. Supported: en_US, pt_BR, fr_FR.
   locale: en_US
 
+  # Stream the model response (Bedrock ConverseStream) or not (Converse).
+  # false is the reliable setting for Nova Pro: under streaming it intermittently
+  # aborts a tool-using turn with
+  #   modelStreamErrorException: Model produced invalid sequence as part of
+  #   ToolUse
+  # which reaches the technician as "please resend". The same prompt and tool
+  # schema succeed on the non-streaming path. The runtime still streams its own
+  # SSE events either way (Strands synthesises them from the Converse response),
+  # so the channel handler is unaffected.
+  streaming: false
+
   # Channels answered in demo mode (CSV). A channel listed here logs the reply
   # (MOCK_<CHANNEL>: reply to <identity>: ...) instead of sending it. Remove a
   # channel to send for real (requires the channel to be provisioned).

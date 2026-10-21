@@ -283,6 +283,39 @@ deterministic, so the same actor always maps to the same conversation. Passing
 the actor id through unchanged is correct — only the session id needs
 sanitising.
 
+### 5. The runtime's event stream has two easy-to-miss shapes
+
+`_extract_reply` reads the SSE stream the Runtime returns. Two properties cost a
+deploy each to find, and neither is in FAST's frontend parser
+(`frontend/src/lib/agentcore-client/parsers/strands.ts`), which reads `message`
+events and expects a `{"result": {"stop_reason": ...}}` dict:
+
+| event | gotcha |
+|---|---|
+| `{"data": "...", "delta": {"text": "..."}, ...}` | `data` is the token with **leading whitespace stripped**; only `delta.text` keeps it. Concatenating `data` gives `Hello!HowcanI...` |
+| `{"result": "<answer>"}` | a plain **string** holding the complete answer — *not* the dict the frontend parser looks for |
+
+So the reply is read as `result` first, then `delta.text` deltas, then an
+assistant `message` (never a user message — those carry tool results).
+
+`<thinking>` blocks: **the runtime does not strip them.** Nova Pro emits its
+reasoning inline in the assistant text, so both the deltas and `result` arrive
+wrapped in `<thinking>...</thinking>`. `_strip_thinking()` removes them. Do not
+assume the runtime has done this.
+
+Mid-stream failures: the stream can end with
+`{"force_stop": true, "force_stop_reason": ...}` plus
+`{"status": "error", "error": ...}` and **no** `result` — for example
+
+```
+modelStreamErrorException: Model produced invalid sequence as part of ToolUse
+```
+
+This is intermittent Nova Pro streaming flakiness, not a schema defect: the same
+seven-tool schema and prompt via non-streaming `Converse` succeeds repeatedly.
+`_extract_reply` raises `RuntimeReplyError` on it so the caller answers "please
+resend" instead of dispatching an empty message.
+
 ---
 
 ## Day-one runbook

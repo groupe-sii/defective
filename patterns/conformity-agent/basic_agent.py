@@ -49,12 +49,83 @@ LOCALE = os.environ.get("LOCALE", "en_US")
 
 _THINKING_RE = re.compile(r"<thinking>.*?</thinking>", re.DOTALL)
 
+_OPEN = "<thinking>"
+_CLOSE = "</thinking>"
+
+
+def _filter_thinking(buffer: str, in_thinking: bool):
+    """Filter reasoning out of a partial stream of assistant text.
+
+    Returns ``(emit, in_thinking, remainder)``:
+
+      * ``emit`` — text safe to send now (outside any thinking block),
+      * ``in_thinking`` — state to pass to the next call,
+      * ``remainder`` — text held back because it might begin a tag.
+
+    A trailing ``<`` or a partial tag is withheld rather than emitted, so a tag
+    split across two deltas is never leaked as literal text.
+    """
+    out = []
+    pos = 0
+    while pos < len(buffer):
+        if in_thinking:
+            end = buffer.find(_CLOSE, pos)
+            if end == -1:
+                # No close tag yet. Keep any trailing characters that could be
+                # the start of "</thinking>" — the tag can arrive split across
+                # deltas, and dropping them would lose the close tag entirely.
+                hold = _partial_tag_len(buffer[pos:], _CLOSE)
+                return "".join(out), True, buffer[len(buffer) - hold:] if hold else ""
+            pos = end + len(_CLOSE)
+            in_thinking = False
+            continue
+
+        start = buffer.find(_OPEN, pos)
+        if start == -1:
+            out.append(buffer[pos:])
+            pos = len(buffer)
+            break
+        out.append(buffer[pos:start])
+        pos = start + len(_OPEN)
+        in_thinking = True
+
+    # Withhold a trailing partial tag: '<', '<t', ... or '</thinkin'. Without
+    # this a tag split across deltas would leak as literal text.
+    emit = "".join(out)
+    keep = _partial_tag_len(emit, _OPEN, _CLOSE)
+    if keep:
+        return emit[:-keep], in_thinking, emit[-keep:]
+    return emit, in_thinking, ""
+
+
+def _partial_tag_len(text: str, *tags: str) -> int:
+    """Length of ``text``'s tail that is a prefix of one of ``tags``.
+
+    ``0`` when the tail cannot begin any of the tags. Used to hold back a tag
+    that is still arriving, without withholding ordinary text or a literal '<'
+    that will never become a tag.
+    """
+    longest = max(len(t) for t in tags)
+    for n in range(min(len(text), longest - 1), 0, -1):
+        tail = text[-n:]
+        if tail.startswith("<") and any(t.startswith(tail) for t in tags):
+            return n
+    return 0
+
 
 def remove_thinking_tags(text: str) -> str:
     """Strip <thinking>...</thinking> blocks the model may emit.
 
-    Ported verbatim from the POC: Nova wraps its reasoning in these tags and
-    they must never reach the technician's phone.
+    Ported from the POC: Nova wraps its reasoning in these tags and they must
+    never reach the technician's phone.
+
+    ``text`` must be a *complete* piece of text. The POC's version was called on
+    a whole response; applying it to a single streamed delta cannot work, because
+    ``<thinking>`` and ``</thinking>`` arrive in different deltas and neither a
+    partial tag nor a half-closed block matches the pattern. The runtime strips
+    the assembled text instead — see the entrypoint — and the channel handler
+    strips again on the final reply, since the model can still emit a block that
+    a single delta-slice would miss.
     """
     try:
         return _THINKING_RE.sub("", text).strip()
@@ -105,7 +176,17 @@ def _system_prompt(role: str) -> str:
 def create_conformity_agent(user_id: str, session_id: str) -> Agent:
     """Build the Strands agent: Nova Pro, Gateway tools, AgentCore Memory."""
     model_id = os.environ.get("DEFAULT_MODEL", "eu.amazon.nova-pro-v1:0")
-    bedrock_model = BedrockModel(model_id=model_id, temperature=0.1)
+    # Streaming is disabled by default: with tools in play Nova Pro's
+    # ConverseStream intermittently aborts the turn with
+    #   modelStreamErrorException: Model produced invalid sequence as part of
+    #   ToolUse
+    # whereas the non-streaming Converse path handles the same prompt and tool
+    # schema reliably. Strands still emits the same stream events either way, so
+    # the runtime's SSE contract is unchanged. See config.yaml: streaming.
+    streaming = os.environ.get("MODEL_STREAMING", "false").lower() == "true"
+    bedrock_model = BedrockModel(
+        model_id=model_id, temperature=0.1, streaming=streaming
+    )
 
     session_manager = _create_session_manager(user_id, session_id)
 
@@ -162,11 +243,24 @@ async def invocations(payload, context: RequestContext):
         agent = create_conformity_agent(user_id, session_id)
         agent.system_prompt = _system_prompt(role)
 
+        # <thinking> spans several deltas, so it cannot be stripped delta by
+        # delta: neither a partial tag nor a half-closed block matches the
+        # pattern. Reasoning is instead filtered with a small state machine that
+        # tracks whether an opening tag is being buffered or a block is open, so
+        # no reasoning text leaves the runtime even mid-stream. The channel
+        # handler strips the final reply as well (belt and braces).
+        in_thinking = False
+        pending = ""
+
         async for event in agent.stream_async(user_query):
             event = dict(event)
-            # Strip <thinking> from streamed deltas before the caller sees them.
-            if isinstance(event.get("data"), str):
-                event["data"] = remove_thinking_tags(event["data"])
+            if isinstance(event.get("data"), str) and event["data"]:
+                pending += event["data"]
+                clean, in_thinking, pending = _filter_thinking(pending, in_thinking)
+                # Emit the event even when the delta was entirely reasoning: the
+                # event may carry other fields (tool state, metadata) and
+                # dropping it would reorder the stream. An empty '' is harmless.
+                event["data"] = clean
             yield json.loads(json.dumps(event, default=str))
 
     except Exception as err:

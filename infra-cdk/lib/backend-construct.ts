@@ -472,6 +472,9 @@ export class BackendConstruct extends Construct {
     if (config.conformity) {
       envVars["LOCALE"] = config.conformity.locale
       envVars["DEFAULT_MODEL"] = config.conformity.model_id
+      // Streaming the model response is unreliable for Nova Pro when a turn
+      // uses tools (see config.yaml: streaming). Default is off for that reason.
+      envVars["MODEL_STREAMING"] = config.conformity.streaming ? "true" : "false"
       envVars["KNOWLEDGE_BASE_ID"] = config.conformity.knowledge_base_id
       envVars["CONTACTS_TABLE"] = this.contactsTable.tableName
       envVars["CASES_TABLE"] = this.casesTable.tableName

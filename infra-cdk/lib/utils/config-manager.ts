@@ -81,6 +81,8 @@ export interface ConformityConfig {
   knowledge_base_id: string
   /** Prompt locale. Supported: en_US, pt_BR, fr_FR. */
   locale: string
+  /** Stream the model response (ConverseStream) or not (Converse). */
+  streaming: boolean
   /** Channels answered in demo mode (CSV). Listed channel = log, absent = send. */
   mock_channels: string
   /** When true, send_contractor_email logs instead of sending via SES. */
@@ -217,6 +219,7 @@ export class ConfigManager {
           model_id: parsedConfig.conformity?.model_id || "eu.amazon.nova-pro-v1:0",
           knowledge_base_id: parsedConfig.conformity?.knowledge_base_id || "",
           locale: parsedConfig.conformity?.locale || "en_US",
+          streaming: parsedConfig.conformity?.streaming !== false,
           mock_channels: parsedConfig.conformity?.mock_channels || "whatsapp,sms,email,rcs",
           mock_email: parsedConfig.conformity?.mock_email !== false,
           contractor_email_from:
