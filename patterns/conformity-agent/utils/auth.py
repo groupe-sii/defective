@@ -8,13 +8,22 @@ Adapted from ``patterns/utils/auth.py``. Two deliberate differences:
    the caller's ``sub`` from the Authorization header. Our primary caller is the
    **channel-handler Lambda** — a service-to-service backend, not a browser. The
    AWS guidance is explicit that service-to-service calls should use **IAM
-   SigV4** and propagate the user through the
-   ``X-Amzn-Bedrock-AgentCore-Runtime-User-Id`` header (exposed to the runtime as
-   ``runtimeUserId``). So the runtime is deployed with the default IAM
-   authorizer, and this module reads the user id from the runtime context.
+   SigV4** and propagate the user id out of band. So the runtime is deployed with
+   the default IAM authorizer, and this module reads the user id from the runtime
+   context.
 
-   We still *accept* a JWT ``sub`` as a fallback, so the web/ops-console path
-   (which authenticates users with Cognito directly) keeps working unchanged.
+   The identity arrives under a ``...-Custom-User-Id`` header rather than the
+   reserved ``X-Amzn-Bedrock-AgentCore-Runtime-User-Id``: AgentCore rejects
+   ``x-amzn-*`` names in a runtime allowlist unless they carry the
+   ``X-Amzn-Bedrock-AgentCore-Runtime-Custom-`` prefix, and the reserved name is
+   set by the service from the ``runtimeUserId`` parameter instead — it is not an
+   allowlist entry. The channel handler sends the custom header *and* sets
+   ``runtimeUserId``, so identity is available both to ``request_headers`` here
+   and to AgentCore Memory for per-person conversation scoping.
+
+   We still *accept* a JWT ``sub`` as a fallback, so a future JWT-fronted caller
+   (e.g. an ops console hitting the runtime directly) would work unchanged. On
+   the current IAM configuration that branch is unreachable.
 
 2. **The Gateway token flow is unchanged** — the runtime mints an M2M Cognito
    token enriched with the user's claims (``aws_client_metadata`` →

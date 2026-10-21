@@ -276,8 +276,10 @@ export class BackendConstruct extends Construct {
     //
     // FAST fronts the runtime with a Cognito JWT authorizer because its caller is
     // a browser. Our primary caller is the channel-handler Lambda (service-to-
-    // service), for which AWS recommends IAM SigV4 with the user propagated via
-    // the X-Amzn-Bedrock-AgentCore-Runtime-User-Id header. Omitting the
+    // service), for which AWS recommends IAM SigV4 with the user propagated in a
+    // custom request header (see requestHeaderConfiguration below; the reserved
+    // X-Amzn-Bedrock-AgentCore-Runtime-User-Id is service-set from runtimeUserId
+    // and cannot be allowlisted). Omitting the
     // authorizerConfiguration keeps the runtime on the default IAM authorizer.
     //
     // The Gateway KEEPS its JWT authorizer (below): the runtime mints an M2M
