@@ -343,6 +343,47 @@ resend" instead of dispatching an empty message.
 
 ---
 
+## A deploy does not guarantee the container that runs
+
+The AgentCore Runtime keeps **warm instances per session** and updates the
+`DEFAULT` endpoint to the new version only when the runtime resource is updated.
+A session that is already warm can therefore keep being served by the **previous
+image**, even though `GetAgentRuntime` reports the new version as `READY` and
+`ListAgentRuntimeEndpoints` reports it as `liveVersion`.
+
+This is how a change that was demonstrably in the image — the pinned
+`strands-agents` and the new `basic_agent.py` — appeared not to take effect: the
+traceback line numbers in CloudWatch matched the *old* `strands/models/bedrock.py`
+and the *old* `basic_agent.py`, while the image in ECR contained the new ones.
+
+Two consequences:
+
+* **Both components log their SDK versions at import** now
+  (`basic_agent.py` and `channel-handler/handler.py`). A CloudWatch line is the
+  cheap way to tell what is actually running.
+* To force a new container, **use a fresh `runtimeSessionId`** — our session id is
+  derived from the actor and the UTC day, so reusing the same phone number keeps
+  landing on the same warm instance.
+
+### The channel handler pins its own boto3/botocore
+
+`InvokeAgentRuntime` is signed with a custom header injected in a `before-sign`
+handler, so the signature depends on SDK internals. Using the AWS-managed
+runtime's bundled botocore produced intermittent
+
+```
+AccessDeniedException: The request signature we calculated does not match the
+signature you provided
+```
+
+on some containers, while the identical call from a local process always
+succeeded. The handler is a `PythonFunction` with a pinned boto3/botocore
+(`lambdas/channel-handler/requirements.txt`) so the deployed SDK is the one that
+was verified. FAST's `feedback` and `cedar-policy` Lambdas already use
+`PythonFunction` for the same class of reason.
+
+---
+
 ## Day-one runbook
 
 ```bash

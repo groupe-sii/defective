@@ -1373,7 +1373,8 @@ export class BackendConstruct extends Construct {
       functionName: `${config.stack_name_base}-channel-handler`,
       runtime: lambda.Runtime.PYTHON_3_13,
       entry: path.join(__dirname, "..", "lambdas", "channel-handler"),
-      handler: "handler.lambda_handler",
+      index: "handler.py",
+      handler: "lambda_handler",
       timeout: cdk.Duration.minutes(2),
       memorySize: 512,
       environment: {
