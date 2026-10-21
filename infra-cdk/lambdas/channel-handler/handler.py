@@ -126,41 +126,91 @@ def _invoke_runtime(actor_id: str, text: str, channel: str) -> str:
     return _extract_reply(raw)
 
 
-def _extract_reply(raw: str) -> str:
-    """Pull assistant text out of the runtime's event stream.
+def _iter_sse_events(raw: str):
+    """Yield the JSON payloads of a Strands AgentCore event stream.
 
-    Handles three shapes, in order of preference:
-      * a final AgentResult event carrying the whole message;
-      * a stream of ``data`` deltas (concatenated);
-      * a single JSON object (non-streaming response).
+    The runtime answers with Server-Sent Events, so each payload line is
+    ``data: {json}`` — not a bare ``{json}`` line. FAST's own frontend client
+    (`frontend/src/lib/agentcore-client/parsers/strands.ts`) is the reference
+    for this format:
+
+        data: {"data": "partial text"}                        # text delta
+        data: {"current_tool_use": {...}, "delta": {...}}     # tool use
+        data: {"message": {"role": "user"|"assistant", ...}}  # whole message
+        data: {"result": {"stop_reason": "end_turn"}}         # terminal
+
+    A non-streaming response (plain JSON body) is also tolerated: if no SSE
+    framing is present the whole body is parsed as one object.
     """
-    full_text = ""
-    result_text = ""
+    saw_sse = False
+    fallback_events = []
     for line in raw.splitlines():
         line = line.strip()
-        if not line or not line.startswith("{"):
+        if not line:
             continue
+        if line.startswith("data:"):
+            saw_sse = True
+            line = line[len("data:"):].strip()
+            if not line or line == "[DONE]":
+                continue
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            continue
+        if line.startswith(("event:", "id:", "retry:", ":")):
+            # Other SSE fields carry no payload we care about.
+            continue
+        # Not SSE-framed: hold it back in case the whole body is one JSON object.
         try:
-            event = json.loads(line)
+            fallback_events.append(json.loads(line))
         except json.JSONDecodeError:
+            pass
+
+    if saw_sse:
+        return
+    if fallback_events:
+        # Only one of these can be the real body; a bare-JSON response is a
+        # single object. Prefer the last (whole-body) parse over per-line noise.
+        if len(fallback_events) > 1:
+            try:
+                yield json.loads(raw)
+                return
+            except json.JSONDecodeError:
+                pass
+        for event in fallback_events:
+            yield event
+
+
+def _extract_reply(raw: str) -> str:
+    """Pull the assistant's final text out of the runtime's event stream.
+
+    Prefers the concatenated ``data`` deltas (the streamed assistant text). The
+    terminal ``{"result": {"stop_reason": ...}}`` event carries no text, and
+    ``message`` events can be *user* messages holding tool results — including
+    those would splice internal tool output into what the technician receives,
+    so only assistant text is collected from them, and only as a fallback for
+    runtimes that don't stream deltas.
+    """
+    streamed = ""
+    messages_text = ""
+
+    for event in _iter_sse_events(raw):
+        if not isinstance(event, dict):
             continue
 
+        # Primary: streamed assistant text deltas.
         if isinstance(event.get("data"), str):
-            full_text += event["data"]
+            streamed += event["data"]
 
-        # Strands emits a terminal event with the aggregated result.
-        result = event.get("result")
-        if isinstance(result, dict):
-            message = result.get("message") or {}
-            for block in message.get("content", []):
-                if isinstance(block, dict) and "text" in block:
-                    result_text += block["text"]
-        elif isinstance(event.get("message"), dict):
-            for block in event["message"].get("content", []):
-                if isinstance(block, dict) and "text" in block:
-                    result_text += block["text"]
+        # Fallback: a complete assistant message (no deltas seen).
+        message = event.get("message")
+        if isinstance(message, dict) and message.get("role") == "assistant":
+            for block in message.get("content") or []:
+                if isinstance(block, dict) and isinstance(block.get("text"), str):
+                    messages_text += block["text"]
 
-    return (result_text or full_text).strip()
+    return (streamed or messages_text).strip()
 
 
 # ---------------------------------------------------------------------------
