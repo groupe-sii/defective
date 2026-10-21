@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import re
+import sys
 
 from bedrock_agentcore.memory.integrations.strands.config import (
     AgentCoreMemoryConfig,
@@ -44,6 +45,26 @@ from utils.auth import extract_user_id_from_context
 logger = logging.getLogger(__name__)
 
 app = BedrockAgentCoreApp()
+
+# Logged at import: identifies the code revision and SDK actually running in the
+# container. The AgentCore Runtime caches warm instances per session, so after a
+# deploy a stale instance can keep serving; this line is how to tell whether the
+# running container is the one just built.
+def _sdk_version(pkg: str) -> str:
+    try:
+        from importlib.metadata import version
+
+        return version(pkg)
+    except Exception:  # pragma: no cover - metadata missing is not fatal
+        return "unknown"
+
+
+logger.info(
+    "conformity-agent starting: strands-agents=%s bedrock-agentcore=%s python=%s",
+    _sdk_version("strands-agents"),
+    _sdk_version("bedrock-agentcore"),
+    sys.version.split()[0],
+)
 
 LOCALE = os.environ.get("LOCALE", "en_US")
 

@@ -1363,11 +1363,17 @@ export class BackendConstruct extends Construct {
    * honouring MOCK_CHANNELS.
    */
   private createChannelHandler(config: AppConfig): void {
-    const channelHandler = new lambda.Function(this, "ChannelHandlerLambda", {
+    // PythonFunction (not lambda.Function) so the handler ships its own pinned
+    // boto3/botocore. It signs InvokeAgentRuntime with a custom header added in
+    // a `before-sign` handler, and the AWS-managed runtime's bundled SDK signed
+    // that inconsistently across containers — see the handler's requirements.txt.
+    // This follows FAST's own bundling convention (feedback/cedar-policy use
+    // PythonFunction for the same reason).
+    const channelHandler = new PythonFunction(this, "ChannelHandlerLambda", {
       functionName: `${config.stack_name_base}-channel-handler`,
       runtime: lambda.Runtime.PYTHON_3_13,
+      entry: path.join(__dirname, "..", "lambdas", "channel-handler"),
       handler: "handler.lambda_handler",
-      code: lambda.Code.fromAsset(path.join(__dirname, "..", "lambdas", "channel-handler")),
       timeout: cdk.Duration.minutes(2),
       memorySize: 512,
       environment: {

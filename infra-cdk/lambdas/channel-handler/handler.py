@@ -28,6 +28,7 @@ import re
 from datetime import datetime, timezone
 
 import boto3
+import botocore
 
 import dispatcher
 from messages import parse_sns_message
@@ -41,6 +42,11 @@ _REGION = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "eu-
 
 _agentcore = boto3.client("bedrock-agentcore", region_name=_REGION)
 _dynamodb = boto3.resource("dynamodb", region_name=_REGION)
+
+# Logged at import so the deployed SDK is identifiable from CloudWatch — the
+# SigV4 behaviour of the InvokeAgentRuntime call below depends on it (see
+# requirements.txt).
+logger.info("channel-handler starting: boto3=%s botocore=%s", boto3.__version__, botocore.__version__)
 
 # The caller identity reaches the agent container as a *custom-prefixed* header.
 # AgentCore rejects `x-amzn-*` names in a runtime allowlist unless they carry the

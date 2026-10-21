@@ -298,10 +298,35 @@ events and expects a `{"result": {"stop_reason": ...}}` dict:
 So the reply is read as `result` first, then `delta.text` deltas, then an
 assistant `message` (never a user message — those carry tool results).
 
-`<thinking>` blocks: **the runtime does not strip them.** Nova Pro emits its
-reasoning inline in the assistant text, so both the deltas and `result` arrive
-wrapped in `<thinking>...</thinking>`. `_strip_thinking()` removes them. Do not
-assume the runtime has done this.
+`<thinking>` blocks: Nova Pro emits its reasoning inline in the assistant text, so
+both the deltas and `result` carry `<thinking>...</thinking>`. The runtime
+filters them with a delta-spanning state machine (`_filter_thinking` in
+`basic_agent.py`) — the original code applied a whole-text regex to each delta,
+where it can never match, because the opening and closing tags arrive in
+different deltas. The channel handler strips them again on the final reply.
+
+### 6. Model streaming is off, and why
+
+`config.yaml: conformity.streaming` defaults to **false**
+(`MODEL_STREAMING` → `BedrockModel(streaming=...)`). With streaming on, Nova Pro
+intermittently aborts a tool-using turn:
+
+```
+modelStreamErrorException: Model produced invalid sequence as part of ToolUse
+```
+
+This is not our schema. The same seven-tool schema and prompt succeed repeatedly
+via `Converse`, and 4/4 via Strands itself with `streaming=False`. Strands
+synthesises the same stream events from a non-streaming response (verified: the
+same event kinds on both paths), so the runtime's SSE contract and
+`_extract_reply` are unchanged. `streaming` is a declared `BedrockConfig` field.
+
+Related: `patterns/conformity-agent/requirements.txt` pins a **compatible pair**
+(`strands-agents==1.61.1` + `bedrock-agentcore==1.4.7`). FAST's baseline pins
+`strands-agents==1.32.0`, but `bedrock-agentcore==1.4.7` requires
+`strands-agents>=1.56.0` for its strands integration — an inconsistent resolve.
+The `streaming` key is present from 1.32.0 through 1.61.1, so the setting itself
+is version-robust; the pin is aligned so the container resolves coherently.
 
 Mid-stream failures: the stream can end with
 `{"force_stop": true, "force_stop_reason": ...}` plus

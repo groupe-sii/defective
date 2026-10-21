@@ -1,0 +1,17 @@
+# Channel handler dependencies.
+#
+# boto3/botocore are pinned deliberately rather than inherited from the
+# AWS-managed Lambda runtime. The handler signs its InvokeAgentRuntime call with
+# a custom header injected in a `before-sign` handler (see handler.py), and the
+# runtime's bundled botocore signed that request inconsistently: the identical
+# call from a local process always succeeded, while some Lambda containers
+# failed with
+#
+#   AccessDeniedException: The request signature we calculated does not match
+#   the signature you provided
+#
+# Because the header must be part of the SigV4 signed-headers set, the
+# signature depends on SDK internals; pinning the SDK makes the behaviour
+# deterministic and identical to what was verified locally.
+boto3>=1.43.66
+botocore>=1.43.66
