@@ -41,17 +41,25 @@ from utils.ssm import get_ssm_parameter
 
 logger = logging.getLogger(__name__)
 
-# AgentCore exposes the propagated user id in this request header.
-_RUNTIME_USER_ID_HEADER = "x-amzn-bedrock-agentcore-runtime-user-id"
+# The runtime's allowlist can only carry `Authorization` (JWT authorizer only)
+# or `X-Amzn-Bedrock-AgentCore-Runtime-Custom-*` headers, so the channel handler
+# sends the caller identity under this custom name. Keep in sync with
+# infra-cdk/lambdas/channel-handler/handler.py and the runtime's
+# requestHeaderConfiguration.
+_RUNTIME_USER_ID_HEADER = "x-amzn-bedrock-agentcore-runtime-custom-user-id"
 
 
 def extract_user_id_from_context(context) -> str:
     """Return the authenticated user id for the current runtime invocation.
 
     Resolution order:
-      1. ``X-Amzn-Bedrock-AgentCore-Runtime-User-Id`` request header
+      1. ``X-Amzn-Bedrock-AgentCore-Runtime-Custom-User-Id`` request header
          (SigV4 service-to-service path; set by the channel handler).
-      2. The ``sub`` claim of the Authorization JWT (web/ops-console path).
+      2. The ``sub`` claim of an Authorization JWT, if one is present.
+
+    This runtime is configured with IAM SigV4, so (1) is the live path; (2) is
+    kept for a possible future JWT-fronted caller (e.g. an ops console invoking
+    the runtime directly). It is dead code today and deliberately harmless.
 
     Raises ``ValueError`` when neither is present — we never fall back to a
     payload-supplied identity, which would allow impersonation via prompt
@@ -69,10 +77,10 @@ def extract_user_id_from_context(context) -> str:
     auth_header = lowered.get("authorization")
     if not auth_header:
         raise ValueError(
-            "No user identity found in the request context. Expected either the "
+            "No user identity found in the request context. Expected the "
             f"'{_RUNTIME_USER_ID_HEADER}' header (SigV4 callers) or an "
             "Authorization JWT. Ensure the runtime's request header allowlist "
-            "includes both headers."
+            "includes the custom user-id header."
         )
 
     token = auth_header[7:] if auth_header.startswith("Bearer ") else auth_header

@@ -481,9 +481,24 @@ export class BackendConstruct extends Construct {
     }
 
     // Create the runtime using L2 construct
-    // requestHeaderConfiguration allows the agent to read the Authorization header
-    // from RequestContext.request_headers, which is needed to securely extract the
-    // user ID from the validated JWT token (sub claim) instead of trusting the payload body.
+    //
+    // requestHeaderConfiguration opts specific request headers into the agent's
+    // `context.request_headers`. Two rules from the AgentCore docs govern what
+    // may be listed (see runtime-header-allowlist.html):
+    //
+    //   * `Authorization` is allowed ONLY when the runtime has a
+    //     customJWTAuthorizer. This runtime is IAM SigV4 (no JWT authorizer), so
+    //     allowlisting it makes CreateRuntime fail with:
+    //       "Authorization header can be specified in requestHeaderAllowlist
+    //        only when runtime is set up with customJWTAuthorizer"
+    //   * `x-amzn-*` names are rejected, except the
+    //     `X-Amzn-Bedrock-AgentCore-Runtime-Custom-` prefix.
+    //
+    // We therefore pass the caller identity in a CUSTOM-prefixed header. The
+    // channel handler sets it on InvokeAgentRuntime; the runtime reads it in
+    // patterns/conformity-agent/utils/auth.py. Do not switch this back to the
+    // reserved `...Runtime-User-Id` name — that one is delivered by the service
+    // from the `runtimeUserId` parameter and cannot be allowlisted.
     this.agentRuntime = new agentcore.Runtime(this, "Runtime", {
       runtimeName: `${config.stack_name_base.replace(/-/g, "_")}_${config.backend.agent_name}`,
       agentRuntimeArtifact: agentRuntimeArtifact,
@@ -492,9 +507,7 @@ export class BackendConstruct extends Construct {
       protocolConfiguration: agentcore.ProtocolType.HTTP,
       environmentVariables: envVars,
       requestHeaderConfiguration: {
-        // Both headers are needed: the runtime user-id header for the SigV4
-        // channel path, Authorization for the JWT web path.
-        allowlistedHeaders: ["Authorization", "X-Amzn-Bedrock-AgentCore-Runtime-User-Id"],
+        allowlistedHeaders: ["X-Amzn-Bedrock-AgentCore-Runtime-Custom-User-Id"],
       },
       description: `${pattern} agent runtime for ${config.stack_name_base}`,
     })

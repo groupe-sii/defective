@@ -9,7 +9,7 @@ lives in the AgentCore Runtime and this Lambda is a thin, stateless adapter:
         -> this Lambda
              1. normalize the envelope            (messages.py)
              2. map the phone to a Cognito user   (contacts table)
-             3. InvokeAgentRuntime  (SigV4 + runtime-user-id header)
+             3. InvokeAgentRuntime  (SigV4 + custom user-id header)
              4. dispatch the reply                (dispatcher.py, MOCK_CHANNELS)
 
 Because the runtime is addressed by the *user's* identity, conversation history
@@ -40,6 +40,15 @@ _REGION = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "eu-
 
 _agentcore = boto3.client("bedrock-agentcore", region_name=_REGION)
 _dynamodb = boto3.resource("dynamodb", region_name=_REGION)
+
+# The caller identity reaches the agent container as a *custom-prefixed* header.
+# AgentCore rejects `x-amzn-*` names in a runtime allowlist unless they carry the
+# `X-Amzn-Bedrock-AgentCore-Runtime-Custom-` prefix, and `Authorization` is only
+# allowed when the runtime has a customJWTAuthorizer (this one is IAM SigV4).
+# Keep in sync with the runtime's requestHeaderConfiguration in
+# infra-cdk/lib/backend-construct.ts and the reader in
+# patterns/conformity-agent/utils/auth.py.
+_USER_ID_HEADER = "X-Amzn-Bedrock-AgentCore-Runtime-Custom-User-Id"
 
 
 # ---------------------------------------------------------------------------
@@ -109,13 +118,10 @@ def _invoke_runtime(actor_id: str, text: str, channel: str) -> str:
         "channel": channel,
     }).encode("utf-8")
 
-    response = _agentcore.invoke_agent_runtime(
-        agentRuntimeArn=RUNTIME_ARN,
-        runtimeSessionId=_session_id(actor_id),
-        runtimeUserId=actor_id,          # SigV4: propagated user identity
-        contentType="application/json",
-        accept="application/json",
+    response = _invoke_with_user_id(
         payload=payload,
+        session_id=_session_id(actor_id),
+        actor_id=actor_id,
     )
 
     body = response["response"]
@@ -124,6 +130,41 @@ def _invoke_runtime(actor_id: str, text: str, channel: str) -> str:
         raw = raw.decode("utf-8", errors="replace")
 
     return _extract_reply(raw)
+
+
+def _invoke_with_user_id(payload: bytes, session_id: str, actor_id: str) -> dict:
+    """Call InvokeAgentRuntime with the caller identity attached.
+
+    Two distinct channels carry the identity, and both are needed:
+
+      * ``runtimeUserId=actor_id`` — a first-class API parameter. AgentCore uses
+        it to scope Memory, so conversation history is per person.
+      * the allowlisted ``X-Amzn-Bedrock-AgentCore-Runtime-Custom-User-Id``
+        header — what the agent reads from ``context.request_headers`` (see
+        ``patterns/conformity-agent/utils/auth.py``). boto3 does not expose
+        arbitrary headers on this API, so it is injected with a botocore
+        ``before-sign`` handler, exactly as the AgentCore docs show.
+    """
+    events = _agentcore.meta.events
+    event_name = "before-sign.bedrock-agentcore.InvokeAgentRuntime"
+
+    def _add_user_id_header(request, **_kwargs):
+        request.headers.add_header(_USER_ID_HEADER, actor_id)
+
+    handler = events.register_first(event_name, _add_user_id_header)
+    try:
+        return _agentcore.invoke_agent_runtime(
+            agentRuntimeArn=RUNTIME_ARN,
+            runtimeSessionId=session_id,
+            runtimeUserId=actor_id,
+            contentType="application/json",
+            accept="application/json",
+            payload=payload,
+        )
+    finally:
+        # Idempotent and cheap, and it keeps a warm Lambda from accumulating
+        # handlers across invocations.
+        events.unregister(event_name, handler)
 
 
 def _iter_sse_events(raw: str):
