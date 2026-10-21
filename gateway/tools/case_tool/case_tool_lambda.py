@@ -11,7 +11,7 @@ Ported from the POC's ``lambdas/tools/case.py``. Implements four tools over the
 ROLE ENFORCEMENT (replaces the POC's ``tools/context.py`` module global):
 
   Layer 1 — Cedar policy at the Gateway. The action
-    ``case-tool-target___record_validation`` is permitted only when
+    ``case_tool_target___record_validation`` is permitted only when
     ``principal.getTag("role") == "expert"``. A denied tool is not even listed to
     the agent, and Cedar cannot be bypassed by prompt injection.
   Layer 2 — this Lambda re-checks the caller's role, read from the Gateway's

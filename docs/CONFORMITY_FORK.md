@@ -104,9 +104,9 @@ Each POC tool file became an AgentCore Gateway Lambda target with a
 
 | Target | Tools | Backing store |
 |---|---|---|
-| `ncr-tool-target` | `search_ncr_history` | Bedrock KB `GXY5L19KJX` |
-| `case-tool-target` | `create_case`, `get_case`, `list_cases`, `record_validation` | `NonConformityCases` |
-| `mail-tool-target` | `send_contractor_email`, `request_expert_validation` | `NonConformityCases` + SES |
+| `ncr_tool_target` | `search_ncr_history` | Bedrock KB `GXY5L19KJX` |
+| `case_tool_target` | `create_case`, `get_case`, `list_cases`, `record_validation` | `NonConformityCases` |
+| `mail_tool_target` | `send_contractor_email`, `request_expert_validation` | `NonConformityCases` + SES |
 
 `lambdas/tools/context.py` is **gone** — its job is done by JWT claims + Cedar.
 
@@ -340,6 +340,49 @@ This is intermittent Nova Pro streaming flakiness, not a schema defect: the same
 seven-tool schema and prompt via non-streaming `Converse` succeeds repeatedly.
 `_extract_reply` raises `RuntimeReplyError` on it so the caller answers "please
 resend" instead of dispatching an empty message.
+
+---
+
+### Hyphens in a tool name break Nova Pro's `Converse`
+
+**A hyphen anywhere in a tool name breaks the whole turn.** The Gateway names
+each tool `<targetName>___<toolName>`, and that string is what the model sees.
+With a hyphen in it, Nova Pro fails the *first* model call of the turn with
+
+```
+ModelErrorException: Model produced invalid sequence as part of ToolUse
+```
+
+(even though no tool has been called yet), and with streaming on, the same error
+surfaces as `modelStreamErrorException ... ConverseStream ...`.
+
+Bisection proved it, and only this one variable mattered:
+
+| Tool name sent to Nova | Result |
+|---|---|
+| `search_ncr_history` | OK |
+| `gateway_ncr_tool_target___search_ncr_history` | OK |
+| `ncr_tool_target___search_ncr_history` | OK |
+| `ncr-tool-target___search_ncr_history` | **FAIL** |
+| `gateway_ncr-tool-target___search_ncr_history` | **FAIL** |
+
+The schema, the prompt and the system prompt were identical across those rows;
+the same tool with a hyphen-free name passes 3/3 on the exact prompt that fails
+3/3 with hyphens. A tool whose name contains hyphens also breaks when it is the
+*only* tool, and hyphens in the *tool* name (not just the target) break it too.
+
+Consequences for this fork:
+
+* **Gateway target names are underscore-only** (`ncr_tool_target`,
+  `case_tool_target`, `mail_tool_target`). They used to be hyphenated.
+* Keep tool names in `tool_spec.json` underscore-only as well.
+* If a target is ever renamed, `gateway/policies/policy.cedar` must be edited in
+  lockstep — Cedar actions are `<targetName>___<toolName>` and Cedar is
+  deny-by-default, so a mismatch silently denies the whole target.
+
+A cheap way to check any future tool naming: add the tool and send **one** short
+prompt that should trigger it. If it fails on the first model call with
+"invalid sequence as part of ToolUse", suspect the name before the schema.
 
 ---
 
