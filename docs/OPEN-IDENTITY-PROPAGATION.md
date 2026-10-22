@@ -1,21 +1,11 @@
-# Identity propagation to Gateway tools (open issue)
+# Identity propagation to Gateway tools
 
-**Status:** open — narrow: the tool-Lambda re-check cannot see the caller, so
-`record_validation` fails closed for experts too. Cedar itself is correct.
-Does **not**
-block the Phase A milestone (technician → `search_ncr_history` → reply), which
-needs no caller identity.
+**Status:** resolved — the tool Lambdas now see the authenticated caller.
+Cedar was already correct; only the second enforcement layer was blind.
 
-## What we assumed
+## The problem
 
-That the Gateway forwards the authenticated caller's identity to Lambda targets,
-so `gateway/tools/*/*_lambda.py` could read `context.client_context.custom`
-and find `user_id` / `role` — the pattern `_caller()` in
-`gateway/tools/case_tool/case_tool_lambda.py` implements.
-
-## What actually happens
-
-Per the AWS docs
+A Lambda target never learns who called it. Per the AWS docs
 ([Lambda function targets](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/gateway-add-target-lambda.html)),
 `context.client_context.custom` contains only:
 
@@ -28,108 +18,103 @@ bedrockAgentCoreTargetId
 bedrockAgentCoreToolName      # "<target-name>___<tool-name>"
 ```
 
-There is **no** `user_id` and **no** `role`. The Gateway does not forward JWT
-claims into the target's Lambda context.
+No `user_id`, no `role`. So `_caller()` in
+`gateway/tools/case_tool/case_tool_lambda.py` resolved to
+`{"identity": "", "role": "technician"}` and `record_validation` denied
+*everyone* — including a legitimate expert. Fail-closed, but it made expert
+validation untestable: case rows had no `created_by`, and only experts could list
+the validation queue.
 
-## What does work (verified in the code, not assumed)
+Cedar itself was fine throughout: the runtime mints its M2M token with
+`aws_client_metadata={"verified_user_id": user_id}`
+(`patterns/conformity-agent/utils/auth.py`), and
+`infra-cdk/lambdas/pretoken-v3/index.py` turns that into `user_id` + `role`
+claims on the access token. The Gateway's JWT authorizer maps those to Cedar
+principal tags, so policy decisions were always based on the real role.
 
-`tools/gateway.py` authenticates with an **M2M** token, but it is *not* an
-anonymous machine token: `get_gateway_access_token(user_id)` sends the caller's
-verified identity as Cognito client metadata —
+## The fix: a Gateway REQUEST interceptor
 
-```python
-"aws_client_metadata": json.dumps({"verified_user_id": user_id})
+`gateway/interceptor/interceptor_lambda.py`, attached in
+`infra-cdk/lib/backend-construct.ts` via
+
+```ts
+gateway.addInterceptor(
+  agentcore.LambdaInterceptor.forRequest(gatewayInterceptorLambda, {
+    passRequestHeaders: true,
+  })
+)
 ```
 
-`infra-cdk/lambdas/pretoken-v3/index.py` reads exactly that in the
-`TokenGeneration_ClientCredentials` flow and injects `user_id` + `role` into the
-access token. So **Cedar evaluates the real user's role**, and the
-`record_validation` gate is genuine: a technician's token carries
-`role=technician`, which the expert-only permit does not match, and the tool is
-therefore denied *and* hidden from `tools/list`.
+Flow:
 
-One caveat worth keeping in mind: this relies on the *agent* passing its own
-`user_id`. It comes from the runtime header / JWT `sub`, not the model, so it is
-not model-settable — but it does mean the Cedar principal is only as trustworthy
-as the runtime's identity extraction (`patterns/conformity-agent/utils/auth.py`).
+1. The Gateway authenticates the inbound M2M JWT.
+2. It invokes the interceptor with the request under
+   `event["mcp"]["gatewayRequest"]` — including the `Authorization` header,
+   because `passRequestHeaders: true` (**without this the interceptor sees no
+   headers and the whole mechanism silently no-ops**).
+3. The interceptor decodes the JWT payload and copies two claims into the
+   `tools/call` arguments:
 
-## What is actually broken
+   | Argument | Source claim | Meaning |
+   |---|---|---|
+   | `_caller_identity` | `user_id` | contacts-table `actor_id` (`phone:…` or a Cognito sub) |
+   | `_caller_role` | `role` | `technician` \| `expert` |
 
-Only the **second layer** — the tool Lambda's defence-in-depth re-check.
-`_caller()` in `gateway/tools/case_tool/case_tool_lambda.py` reads
-`context.client_context.custom`, which has no `user_id`, so:
+4. The target Lambda pops both keys in `handler` before `fn(**event)`, and puts
+   them in a `contextvars.ContextVar` for the tools to read.
 
-- `identity=""`;
-- its DynamoDB fallback is guarded by `if ... and identity`, so it never runs;
-- `role` therefore defaults to `technician`.
+`ncr_tool` and `mail_tool` also pop the keys even though they do not use
+identity, so the extra arguments can never break `fn(**event)`.
 
-`record_validation` refuses **everyone**, including a legitimate expert — the
-opposite failure from a security hole, but it makes expert validation
-untestable. Cedar would have permitted the expert; the Lambda then denies.
+### Why the arguments and not headers
 
-Decision: this is fail-closed and therefore safe to ship. Fix it in Phase B.
+A Lambda target only receives the tool arguments — headers stop at the Gateway.
+The AWS reference implementation for identity propagation does the same thing
+(`extended_body["params"]["arguments"]["authorization"] = auth_header`) against
+an unmodified tool schema, so the Gateway does not reject arguments that are not
+in `toolSpec.inputSchema`. No `tool_spec.json` changed.
 
-## The fix (documented mechanism: Gateway request interceptor)
+### Why this is not "trusting model input"
 
-AWS documents this exact problem and its solution in
-[Apply fine-grained access control with Bedrock AgentCore Gateway interceptors](https://aws.amazon.com/blogs/machine-learning/apply-fine-grained-access-control-with-bedrock-agentcore-gateway-interceptors/).
+The interceptor reads the claims from the **authenticated** token, and it
+*deletes* both keys from the incoming arguments before writing its own values.
+A prompt-injected `{"_caller_role": "expert"}` is therefore discarded whether or
+not a valid token is present (verified: a garbled token leaves the arguments
+empty rather than keeping the spoofed value).
 
-A **Gateway request interceptor** Lambda sits between the Gateway and the
-target. It can:
+Two further constraints:
 
-1. read the inbound request's headers/context, and
-2. inject parameters into the request the target receives.
+* `sub` is deliberately ignored. On a client-credentials token `sub` is the
+  *machine* client id, not an actor id.
+* The role is only a claim. `_caller()` re-derives it from the contacts table
+  keyed on the injected identity, and uses the claim solely as a fallback when
+  the row is missing or the lookup fails. Promote someone by editing the table;
+  the JWT claim and the table cannot diverge into extra privilege.
 
-So the plan is:
+The signature is not re-verified inside the interceptor: the Gateway verified it
+before invoking the interceptor, and only the Gateway's execution role has
+`lambda:InvokeFunction` on it.
 
-1. Add a request interceptor to the Gateway (CDK: the Gateway construct takes an
-   interceptor configuration).
-2. **Enable `inputConfiguration.passRequestHeaders: true` on the interceptor.**
-   The AWS Security Blog is explicit that without it the interceptor cannot see
-   the inbound request headers at all, and the whole pattern fails. This is the
-   easiest step to miss.
-3. Have the runtime send the caller's identity + role as request headers on the
-   MCP call (it already knows both: `utils/auth.extract_user_id_from_context`
-   and `utils.contacts.resolve_role`).
-4. The interceptor moves them into `inputSchema` parameters (e.g.
-   `_caller_identity`, `_caller_role`) so the tool Lambdas receive them in
-   `event`, and strips the headers before the target sees them.
-5. Tool Lambdas read those parameters instead of `context.client_context.custom`.
-   Keep the contacts-table lookup as the authority: treat the injected role as a
-   *claim*, then re-derive from DynamoDB keyed by the injected identity.
-6. Cedar needs **no** change — it already sees the real user's role (see above).
-   Do not weaken it into "the Lambda is the only check"; keep both layers.
+## What this fixes
 
-A simpler alternative worth considering first, since the gap is only in the
-Lambda's *defence-in-depth* check: have the agent pass the caller identity as a
-**tool argument** that the interceptor overwrites. That is strictly weaker than
-headers (the model can attempt to set it), so if it is used, the interceptor must
-*replace* the value rather than trust it, and the Lambda must still re-derive the
-role from DynamoDB. Headers are cleaner; prefer them.
+* `create_case` sets `created_by` — so `created_by-index` queries and the
+  technician's own-case visibility (`get_case`, `list_cases`) work.
+* `record_validation` passes its Layer-2 check for a real expert and still
+  refuses a technician, independently of Cedar.
+* Case rows now record `validation.approver`.
 
-The interceptor handler receives the request under `event["mcp"]["gatewayRequest"]`
-(headers in `.headers`), and returns:
+## Verification
 
-```python
-{
-  "interceptorOutputVersion": "1.0",
-  "mcp": {
-    "transformedGatewayRequest": {
-      "statusCode": 200,
-      "headers": {...},           # strip the identity headers here
-      "body": { ... },            # with identity injected into the tool arguments
-    }
-  },
-}
+Deploy, then run the technician path and the expert path:
+
+```bash
+uv run test-scripts/test-channel.py "Pump P-101 is leaking at the mechanical seal..." \
+    --channel whatsapp --phone 5511944443333
+# expert phone, replying in its own 1:1 chat:
+uv run test-scripts/test-channel.py "approve NC-20261022-059c16" \
+    --channel whatsapp --phone 5511999998888
 ```
 
-(Inbound is `transformedGatewayRequest` for a REQUEST interception point;
-response interceptors use `transformedGatewayResponse`.)
-
-## Interim safety
-
-Until this lands, the tool Lambdas' role checks must be treated as **not
-working** (they fail closed — they deny — which is safe but makes expert
-validation untestable). Do not "fix" it by trusting a role from the model's tool
-arguments: an LLM can be prompt-injected into passing `role="expert"`. The role
-must arrive on a channel the model does not control.
+Expected: the case row has `created_by`, and `record_validation` returns
+`status: APPROVED` with `approver` set for the expert and a `forbidden` error for
+a technician.

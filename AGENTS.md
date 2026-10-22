@@ -26,6 +26,10 @@ FAST's skeleton is imported at the repo root. First-party code added by this for
   - `ncr_tool/` → `search_ncr_history` (Bedrock KB)
   - `case_tool/` → `create_case`, `get_case`, `list_cases`, `record_validation`
   - `mail_tool/` → `send_contractor_email`, `request_expert_validation`
+- `gateway/interceptor/` — **→** Gateway REQUEST interceptor: copies the
+  authenticated M2M JWT's `user_id`/`role` claims into the tool arguments
+  (`_caller_identity` / `_caller_role`), because a Lambda target gets no caller
+  identity. See `docs/OPEN-IDENTITY-PROPAGATION.md`.
 - `gateway/policies/policy.cedar` — **→** rewritten: `record_validation` is expert-gated; everything else is technician-or-expert.
 - `scripts/seed-contacts.py` — **→** post-deploy: creates a Cognito user per expert number and seeds the contacts table.
 - `test-scripts/test-channel.py` — **→** the AgentCore port of the POC's `mock_send.py`: builds a WhatsApp/SMS envelope, publishes it to the stack's SNS topic, tails the reply out of CloudWatch.

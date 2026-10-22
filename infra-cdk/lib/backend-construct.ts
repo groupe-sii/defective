@@ -809,6 +809,19 @@ export class BackendConstruct extends Construct {
       logGroup: toolLogGroup("MailToolLambdaLogGroup", "mail-tool"),
     })
 
+    // Gateway REQUEST interceptor. A Lambda target cannot see its caller, so
+    // this function copies the authenticated JWT's user_id/role claims into the
+    // tool-call arguments. See gateway/interceptor/interceptor_lambda.py and
+    // docs/OPEN-IDENTITY-PROPAGATION.md for why the second layer needs it.
+    const gatewayInterceptorLambda = new lambda.Function(this, "GatewayInterceptorLambda", {
+      functionName: `${config.stack_name_base}-gateway-interceptor`,
+      runtime: lambda.Runtime.PYTHON_3_13,
+      handler: "interceptor_lambda.lambda_handler",
+      code: lambda.Code.fromAsset(path.join(__dirname, "../../gateway/interceptor")),
+      timeout: cdk.Duration.seconds(10),
+      logGroup: toolLogGroup("GatewayInterceptorLambdaLogGroup", "gateway-interceptor"),
+    })
+
     // Table + KB data access for the tool Lambdas.
     this.casesTable.grantReadWriteData(caseToolLambda)
     this.casesTable.grantReadWriteData(mailToolLambda)
@@ -1013,6 +1026,17 @@ export class BackendConstruct extends Construct {
       }),
       description: "AgentCore Gateway with MCP protocol and JWT authentication",
     })
+
+    // Request interceptor: injects the caller's identity (from the authenticated
+    // M2M JWT's user_id/role claims) into each tools/call's arguments, because
+    // Lambda targets receive no caller identity of their own. passRequestHeaders
+    // MUST stay true — without the Authorization header the interceptor has
+    // nothing to read and the whole mechanism silently no-ops.
+    gateway.addInterceptor(
+      agentcore.LambdaInterceptor.forRequest(gatewayInterceptorLambda, {
+        passRequestHeaders: true,
+      })
+    )
 
     // Create the Gateway Targets using L2 addLambdaTarget().
     // This grants the gateway role invoke permission and adds the resource-based

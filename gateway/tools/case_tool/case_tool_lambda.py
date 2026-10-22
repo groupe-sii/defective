@@ -14,11 +14,13 @@ ROLE ENFORCEMENT (replaces the POC's ``tools/context.py`` module global):
     ``case___record_validation`` is permitted only when
     ``principal.getTag("role") == "expert"``. A denied tool is not even listed to
     the agent, and Cedar cannot be bypassed by prompt injection.
-  Layer 2 — this Lambda re-checks the caller's role, read from the Gateway's
-    JWT-derived context (``context.client_context.custom['bedrockAgentCoreRole']``,
-    injected by the Pre-Token Lambda) and falls back to a DynamoDB lookup on the
-    caller's ``user_id``. Defence in depth: if the policy were misconfigured, the
-    tool still refuses non-experts.
+  Layer 2 — this Lambda re-checks the caller's role. The identity arrives as the
+    ``_caller_identity`` tool argument, injected by the Gateway request
+    interceptor (``gateway/interceptor/interceptor_lambda.py``) from the
+    authenticated M2M JWT. The role is then re-derived from the contacts table
+    keyed on that identity; the JWT's ``role`` claim is only a fallback. Defence
+    in depth: if the policy were misconfigured, the tool still refuses
+    non-experts.
 
 Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: Apache-2.0
@@ -76,38 +78,38 @@ def _load_case(case_id: str):
 # ---------------------------------------------------------------------------
 
 def _caller() -> dict:
-    """Best-effort caller identity from the Gateway context or the environment.
+    """Caller identity for the current tool invocation.
 
-    The Gateway maps JWT claims to Cedar tags for *policy* evaluation, but it does
-    not forward arbitrary claims into the Lambda event. Two identity sources are
-    available here:
+    ``identity`` comes from the Gateway request interceptor, which copies the
+    authenticated JWT's ``user_id`` claim into the tool arguments as
+    ``_caller_identity`` (see ``gateway/interceptor/interceptor_lambda.py``).
+    The model never supplies it: the interceptor overwrites the key after the
+    model's arguments arrive, and ``handler`` pops it before the tool runs.
 
-      * ``context.client_context.custom`` — set by the Gateway; includes the tool
-        name, and (via the Pre-Token Lambda enrichment) the user/role when the
-        invoking client passed them through. We read them defensively.
-      * ``CONTACTS_TABLE`` — authoritative lookup by ``user_id``.
+    ``role`` is then re-derived from the contacts table keyed on that identity.
+    That table is the authority — the JWT's ``role`` claim (also injected, as
+    ``_caller_role``) is only a fallback for when the lookup fails or the row is
+    missing. So a stale or tampered claim can never grant expert rights that the
+    table does not.
 
     Returns ``{"identity": ..., "role": ...}``. Role defaults to "technician".
     """
-    identity = ""
-    role = ""
-    try:
-        custom = _GATEWAY_CONTEXT.get() or {}
-        identity = str(custom.get("user_id", "") or "")
-        role = str(custom.get("role", "") or "").lower()
-    except Exception:  # pragma: no cover - contextvar always present here
-        pass
+    custom = _GATEWAY_CONTEXT.get() or {}
+    identity = str(custom.get("user_id", "") or "")
+    claimed_role = str(custom.get("role", "") or "").lower()
 
-    if (not identity or not role) and CONTACTS_TABLE and identity:
+    if identity and CONTACTS_TABLE:
         try:
             item = _dynamodb.Table(CONTACTS_TABLE).get_item(
                 Key={"actor_id": identity}
             ).get("Item") or {}
-            role = role or str(item.get("role", "")).lower()
+            role = str(item.get("role", "") or "").lower()
+            if role:
+                return {"identity": identity, "role": role}
         except Exception as err:
             logger.error("contacts lookup failed for %s: %s", identity, err)
 
-    return {"identity": identity, "role": role or "technician"}
+    return {"identity": identity, "role": claimed_role or "technician"}
 
 
 # Set by the handler before dispatching to a tool (contextvar so concurrent
@@ -250,9 +252,17 @@ def handler(event, context):
         original = custom["bedrockAgentCoreToolName"]
         tool_name = original[original.index("___") + 3:]
 
-        # Expose whatever identity the Gateway carried into the request to the
+        # The Gateway request interceptor injects the authenticated caller's
+        # identity as arguments. Pop them so they never reach the tool
+        # signatures, and expose them — plus the Gateway's own context — to the
         # tools through a task-local contextvar.
-        _GATEWAY_CONTEXT.set(dict(custom))
+        injected = {
+            "user_id": str(event.pop("_caller_identity", "") or ""),
+            "role": str(event.pop("_caller_role", "") or "").lower(),
+        }
+        _GATEWAY_CONTEXT.set(
+            {**dict(custom), **{k: v for k, v in injected.items() if v}}
+        )
 
         fn = TOOLS.get(tool_name)
         if fn is None:

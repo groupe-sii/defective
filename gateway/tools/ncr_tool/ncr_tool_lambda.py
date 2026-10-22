@@ -99,6 +99,12 @@ def handler(event, context):
             logger.error("Unexpected tool name: %s", tool_name)
             return {"error": f"This Lambda does not implement '{tool_name}'"}
 
+        # Strip the caller-identity arguments added by the Gateway request
+        # interceptor (gateway/interceptor/interceptor_lambda.py). This tool
+        # needs no identity, and they would otherwise break fn(**event).
+        event.pop("_caller_identity", None)
+        event.pop("_caller_role", None)
+
         result = fn(**event)
         return {"content": [{"type": "text", "text": result}]}
     except Exception as err:

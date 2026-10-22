@@ -115,6 +115,19 @@ Each POC tool file became an AgentCore Gateway Lambda target with a
 `backend-construct.ts` without updating `gateway/policies/policy.cedar` silently
 denies every call on that target.
 
+### 5b. Caller identity reaches the tools through a Gateway interceptor
+
+A Lambda target gets no caller identity in `context.client_context.custom` — only
+bookkeeping ids and the tool name. So the tool-side role re-check had nothing to
+check and denied everyone. A **REQUEST interceptor**
+(`gateway/interceptor/interceptor_lambda.py`) fixes that: with
+`passRequestHeaders: true` it reads the authenticated M2M JWT and copies its
+`user_id`/`role` claims into the `tools/call` arguments as `_caller_identity` /
+`_caller_role`. The tool Lambdas pop them in `handler`. Values are written *after*
+the model's arguments and overwrite both keys, so a prompt-injected role is
+discarded; the contacts table remains the authority for the role.
+See `docs/OPEN-IDENTITY-PROPAGATION.md`.
+
 ### 6. Region and model
 
 - Region: **eu-west-1** (FAST defaults to us-east-1).
