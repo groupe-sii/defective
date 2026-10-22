@@ -58,12 +58,20 @@ conformity:
   model_id: eu.amazon.nova-pro-v1:0
 
   # Bedrock Knowledge Base holding past Non-Conformity Reports (NCRs).
-  # hackaton-nci is currently image-only: tools/ncr.py reads the caption from
-  # the x-amz-bedrock-kb-description metadata key.
+  # Seeded with the dataset images *and* the 92 synthetic text NCRs from
+  # data/ncr_cable_synthetiques_bundle/ (see scripts/ingest-ncr-text.py).
   knowledge_base_id: GXY5L19KJX
 
   # Locale of the agent prompts. Supported: en_US, pt_BR, fr_FR.
   locale: en_US
+
+  # Enforcement mode of the AgentCore policy engine attached to the Gateway.
+  #   ENFORCE  - Cedar decisions are real: a technician's tools/list omits
+  #              record_validation, and any denied call fails.
+  #   LOG_ONLY - decisions are only traced (no denial). Use it to validate a
+  #              policy change before it can break the demo.
+  # The Cedar statements live in gateway/policies/policy.cedar.
+  policy_engine_mode: ENFORCE
 
   # Stream the model response (Bedrock ConverseStream) or not (Converse).
   # false is the reliable setting for Nova Pro: under streaming it intermittently
@@ -79,13 +87,48 @@ conformity:
   # Channels answered in demo mode (CSV). A channel listed here logs the reply
   # (MOCK_<CHANNEL>: reply to <identity>: ...) instead of sending it. Remove a
   # channel to send for real (requires the channel to be provisioned).
-  mock_channels: whatsapp,sms,email,rcs
+  mock_channels: whatsapp,email,rcs
 
   # When true, send_contractor_email logs (MOCK_EMAIL ...) instead of using SES.
   mock_email: true
 
   # Outbound e-mail envelope for the contractor notification.
   contractor_email_from: noreply@example.com
+
+  # SMS delivery via AWS End User Messaging (pinpoint-sms-voice-v2).
+  # `origination_identity` is a phone-number id/ARN, a pool id, or a *sender ID*.
+  #
+  # The demo runs on the EUM **SMS simulator**: messages never touch a carrier,
+  # EUM records realistic delivery events, and no phone number has to be
+  # purchased or verified. Constraint: an origination simulator exists only in
+  # the US and can only message US destination simulators, so both demo
+  # identities below are US numbers (a French number is impossible with the
+  # simulator: `INVALID_IDENTITY_FOR_DESTINATION_COUNTRY`).
+  #
+  # EUM has no single origination that reaches every country, so the dispatcher
+  # picks by destination country: `origination_by_country` wins, the simulator
+  # is the fallback. That is what lets one deploy text the real French phone
+  # (via CONFORMITE) *and* the US simulator identities.
+  sms:
+    origination_identity: phone-87bc52bcebf244de87fda9b90c42fec1  # +1 206 555 2684
+    message_type: TRANSACTIONAL
+    origination_by_country:
+      # France: alphanumeric sender ID, $0/month, no registration required.
+      # Only rule (since 2026-03-01): a-z A-Z 0-9, no dashes.
+      FR: arn:aws:sms-voice:eu-west-1:160885249481:sender-id/CONFORMITE/FR
+    # Demo identities (digits only). A `+1 425…` number is an EUM simulator
+    # destination; a `+33…` number is a real handset that must first be verified
+    # in the sandbox (scripts/provision-sms.py --add/--verify).
+    #
+    # Default is the simulator "success" destination: it needs no phone, no OTP
+    # and no carrier, so the demo works out of the box. To show a real SMS on a
+    # handset instead, swap the technician for your verified French number:
+    #     technician: "33670022195"
+    # The dispatcher then sends from CONFORMITE automatically (see
+    # origination_by_country above) - no other change needed.
+    demo_identities:
+      technician: "14254147755"  # US "success" simulator destination
+      expert: "14254147167"      # US "failure" simulator destination
 
   # Expert phone numbers (digits only), used to seed the contacts mapping table.
   # These are the numbers allowed to approve/reject a drafted procedure.

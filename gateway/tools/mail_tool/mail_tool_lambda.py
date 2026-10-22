@@ -43,8 +43,14 @@ def _load_case(case_id: str):
     return _table().get_item(Key={"case_id": case_id}).get("Item")
 
 
-def send_contractor_email(case_id: str, subject: str, body: str) -> str:
-    """Send the validated procedure e-mail to the equipment contractor."""
+def send_contractor_email(case_id: str, subject: str, body: str,
+                           contractor_email: str = "") -> str:
+    """Send the validated procedure e-mail to the equipment contractor.
+
+    ``contractor_email`` is optional: it lets the technician supply the address
+    late (after case creation). It is persisted on the case before sending, so
+    follow-up calls and status checks see it.
+    """
     case = _load_case(case_id)
     if case is None:
         return json.dumps({"error": f"case {case_id} not found"})
@@ -53,10 +59,12 @@ def send_contractor_email(case_id: str, subject: str, body: str) -> str:
             "error": "refused: case is not APPROVED by the conformity expert "
                      f"(status={case.get('status')}). Validation must happen first."
         })
-    to_email = case.get("contractor_email")
+    to_email = case.get("contractor_email") or (contractor_email or "").strip()
     if not to_email:
         return json.dumps({"error": "case has no contractor e-mail recorded; "
-                                    "ask the technician for it and update the case"})
+                                    "ask the technician for it and call again "
+                                    "with it as contractor_email"})
+    case["contractor_email"] = to_email
 
     mocked = os.getenv("MOCK_EMAIL", "true").lower() == "true"
     now = int(time.time())

@@ -40,6 +40,22 @@ export class FastMainStack extends cdk.Stack {
       frontendUrl: this.amplifyHosting.amplifyUrl,
     })
 
+    // The V3 Pre-Token Lambda resolves the caller's role from the contacts
+    // table, which belongs to the backend construct. It is created by the
+    // Cognito construct (which must exist first: the backend needs the pool),
+    // so the table is wired here.
+    //
+    // This is load-bearing: without CONTACTS_TABLE the Lambda falls back to
+    // `DEFAULT_ROLE = "technician"` for *everybody*, so an expert's M2M token
+    // carries role=technician. The Cedar policy then denies that expert
+    // `record_validation`, and the only thing keeping the flow alive is the
+    // tool Lambda's own contacts-table re-check.
+    this.cognito.preTokenLambda.addEnvironment(
+      "CONTACTS_TABLE",
+      this.backend.contactsTable.tableName
+    )
+    this.backend.contactsTable.grantReadData(this.cognito.preTokenLambda)
+
     // Outputs
     new cdk.CfnOutput(this, "AmplifyAppId", {
       value: this.amplifyHosting.amplifyApp.appId,
@@ -118,6 +134,12 @@ export class FastMainStack extends cdk.Stack {
       value: this.backend.casesTable.tableName,
       description: "DynamoDB table of non-conformity cases",
       exportName: `${props.config.stack_name_base}-CasesTableName`,
+    })
+
+    new cdk.CfnOutput(this, "TranscriptTableName", {
+      value: this.backend.transcriptTable.tableName,
+      description: "DynamoDB table of conversation transcripts (both directions)",
+      exportName: `${props.config.stack_name_base}-TranscriptTableName`,
     })
   }
 }

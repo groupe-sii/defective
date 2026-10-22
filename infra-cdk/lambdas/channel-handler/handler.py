@@ -31,7 +31,9 @@ from datetime import datetime, timezone
 import boto3
 import botocore
 
+import dedupe
 import dispatcher
+import transcript
 from messages import parse_sns_message
 
 logger = logging.getLogger()
@@ -178,6 +180,39 @@ class RuntimeReplyError(RuntimeError):
     """The runtime streamed a failure (or nothing) instead of an answer."""
 
 
+# Status-like questions, in every supported locale. The match must stay loose:
+# it only decides whether the per-turn directive below is appended.
+_STATUS_QUERY_RE = re.compile(
+    r"(\bstatus\b|\bstatut\b|\bestado do caso\b|\bstate of\b|\bany news\b"
+    r"|\bdes nouvelles\b|\balguma novidade\b|\bou en est\b)",
+    re.IGNORECASE,
+)
+
+
+def _augmented_prompt(text: str) -> str:
+    """Append a per-turn directive to status-like questions.
+
+    Memory replays the whole session, so a later "status?" in a warm session is
+    answered by imitating the model's own earlier wording ("still
+    PENDING_VALIDATION") instead of calling ``list_cases`` - observed live
+    after the expert had approved the case. A directive attached to the
+    CURRENT user message outranks the replayed history; the system prompt
+    cannot, because it was already there when the drift happened.
+
+    The raw user text is what gets transcribed and deduplicated; only the
+    prompt sent to the runtime is augmented.
+    """
+    if not _STATUS_QUERY_RE.search(text):
+        return text
+    return (
+        text.rstrip()
+        + "\n\n[System directive: this question requires live data. Call list_cases"
+        " (and get_case when a case id is mentioned) BEFORE answering - earlier"
+        " replies in this conversation may be stale. Reply with the concrete case"
+        " id and its current status.]"
+    )
+
+
 def _invoke_runtime(actor_id: str, text: str, channel: str) -> str:
     """Call the conformity agent and return its final reply text.
 
@@ -186,7 +221,7 @@ def _invoke_runtime(actor_id: str, text: str, channel: str) -> str:
     the runtime before streaming.
     """
     payload = json.dumps({
-        "prompt": text,
+        "prompt": _augmented_prompt(text),
         "runtimeSessionId": _session_id(actor_id),
         "channel": channel,
     }).encode("utf-8")
@@ -421,9 +456,18 @@ def process_record(record: dict):
             logger.error("Unsupported message type: %s", message.message_type)
             continue
 
+        # Claim the provider message id before doing any work: SNS retries and
+        # provider redeliveries would otherwise send the same SMS reply twice.
+        if not dedupe.claim(message.message_id):
+            logger.info("duplicate %s (%s) from %s ignored",
+                        message.message_id, message.channel, message.sender)
+            continue
+
         actor_id, role = _identity_for(message.identity)
         logger.info("on %s resolved %s as %s (actor=%s)",
                     message.channel, message.sender, role, actor_id)
+        transcript.record(message.identity, "user", message.text, message.channel,
+                          actor_id=actor_id, message_id=message.message_id)
 
         try:
             reply_text = _invoke_runtime(actor_id, message.text, message.channel)
@@ -440,14 +484,28 @@ def process_record(record: dict):
             logger.exception("Agent invocation failed for %s", actor_id)
             reply_text = "Sorry, something went wrong while handling your message."
 
-        dispatch_result = dispatcher.send_reply(
-            channel=message.channel,
-            sender=message.identity,
-            text=reply_text,
-            phone_number_id=message.channel_meta.get("phone_number_id", ""),
-            message_id=message.message_id,
-            origination_number=message.recipient,
-        )
+        try:
+            dispatch_result = dispatcher.send_reply(
+                channel=message.channel,
+                sender=message.identity,
+                text=reply_text,
+                phone_number_id=message.channel_meta.get("phone_number_id", ""),
+                message_id=message.message_id,
+                origination_number=message.recipient,
+            )
+        except Exception as err:
+            # A delivery failure (e.g. sandbox destination not verified) must not
+            # fail the whole SNS batch: the agent already answered, and SNS would
+            # redeliver every record in the batch.
+            logger.exception("Dispatch failed on %s to %s", message.channel, message.identity)
+            dispatch_result = {"error": f"{type(err).__name__}: {err}"}
+
+        # One stable line per answered turn: ops/debugging, and the phone
+        # emulator can show a reply even before the transcript table is read.
+        logger.info("REPLY %s %s: %s", message.channel, message.identity, reply_text)
+        transcript.record(message.identity, "assistant", reply_text, message.channel,
+                          actor_id=actor_id, message_id=message.message_id,
+                          dispatch=dispatch_result)
         results.append({
             "channel": message.channel,
             "identity": message.identity,

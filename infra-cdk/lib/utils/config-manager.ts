@@ -69,6 +69,40 @@ export interface AppConfig {
 }
 
 /**
+ * SMS delivery settings (AWS End User Messaging / pinpoint-sms-voice-v2).
+ */
+export interface SmsConfig {
+  /**
+   * Origination identity for outbound SMS: a phone-number id/ARN, a pool id, or
+   * an alphanumeric sender ID. France offers no long codes through the API but
+   * alphanumeric sender IDs need no registration (letters/digits only).
+   */
+  origination_identity: string
+  /** TRANSACTIONAL (default) or PROMOTIONAL. */
+  message_type: string
+  /**
+   * Per-destination-country origination overrides (ISO 3166 alpha-2 -> phone
+   * number id/ARN/sender ID). EUM has no origination that reaches every country:
+   * the simulator is US-only, France needs the CONFORMITE sender ID.
+   */
+  origination_by_country: { [country: string]: string }
+  /** Demo identities (digits only). simulator destination or a real handset. */
+  demo_identities: SmsDemoIdentities
+}
+
+/**
+ * The phone identities used by the demo scripts. Either may be an EUM simulator
+ * destination or a verified real handset — the scripts do not care, and the
+ * dispatcher picks the origination by destination country.
+ */
+export interface SmsDemoIdentities {
+  /** Reports the non-conformity. */
+  technician: string
+  /** Approves or rejects the drafted procedure. */
+  expert: string
+}
+
+/**
  * Conformity-assistant domain configuration. Ported from the POC's
  * template.yaml parameters (KB id, model, locale, expert contacts, mock flags).
  */
@@ -89,8 +123,16 @@ export interface ConformityConfig {
   mock_email: boolean
   /** From address for the contractor notification e-mail. */
   contractor_email_from: string
+  /** SMS origination identity (phone-number id/ARN, pool id, or sender ID). */
+  sms: SmsConfig
   /** Expert phone numbers (digits only) seeded into the contacts mapping table. */
   expert_contacts: string[]
+  /**
+   * Enforcement mode of the AgentCore policy engine attached to the Gateway.
+   * `ENFORCE` really denies; `LOG_ONLY` only traces the decision (useful when
+   * validating a policy change). Defaults to ENFORCE.
+   */
+  policy_engine_mode: "ENFORCE" | "LOG_ONLY"
 }
 
 /**
@@ -224,7 +266,22 @@ export class ConfigManager {
           mock_email: parsedConfig.conformity?.mock_email !== false,
           contractor_email_from:
             parsedConfig.conformity?.contractor_email_from || "noreply@example.com",
+          sms: {
+            origination_identity: parsedConfig.conformity?.sms?.origination_identity || "",
+            message_type: parsedConfig.conformity?.sms?.message_type || "TRANSACTIONAL",
+            origination_by_country: parsedConfig.conformity?.sms?.origination_by_country || {},
+            demo_identities: {
+              technician: parsedConfig.conformity?.sms?.demo_identities?.technician
+                || "14254147755",
+              expert: parsedConfig.conformity?.sms?.demo_identities?.expert
+                || "14254147167",
+            },
+          },
           expert_contacts: parsedConfig.conformity?.expert_contacts || [],
+          policy_engine_mode:
+            parsedConfig.conformity?.policy_engine_mode === "LOG_ONLY"
+              ? "LOG_ONLY"
+              : "ENFORCE",
         },
       }
     } catch (error) {

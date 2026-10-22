@@ -182,6 +182,16 @@ def _create_session_manager(user_id: str, session_id: str) -> AgentCoreMemorySes
         session_id=session_id,
         actor_id=user_id,
         retrieval_config=retrieval_config,
+        # Restored history keeps user/assistant text (so the agent remembers the
+        # conversation) but drops historical toolUse/toolResult blocks.
+        #
+        # Without this the model treats an *old* tool result as current truth: a
+        # technician who created a case, then asked "status" after the expert had
+        # approved it, was answered from the replayed create_case payload
+        # ("PENDING_VALIDATION") without ever calling list_cases. Stripping the
+        # tool context forces a fresh tool call whenever the answer depends on
+        # state.
+        filter_restored_tool_context=True,
     )
     return AgentCoreMemorySessionManager(
         agentcore_memory_config=config,

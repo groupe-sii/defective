@@ -20,17 +20,19 @@ controlled by the stack's MOCK_CHANNELS setting.
 
 Usage:
     # Make sure the agent stack is deployed and you have AWS credentials.
-    # A technician reports a non-conformity over WhatsApp:
-    uv run test-scripts/test-channel.py "Pump P-101 is leaking at the seal" \\
-        --phone 5521988887777 --channel whatsapp
+    # A technician reports a non-conformity over SMS. The default SMS identity is
+    # the EUM SMS simulator "success" destination, so the reply is really sent
+    # (and EUM records a delivery event) without any phone or carrier:
+    uv run test-scripts/test-channel.py "Pump P-101 is leaking at the seal"
 
-    # The expert validates a case in their own chat (they are role=expert):
+    # The expert validates a case in their own chat (they are role=expert).
+    # 14254147167 is the simulator's "failure" destination, which exercises the
+    # delivery-failure path:
     uv run test-scripts/test-channel.py "approve NC-20261021-ab12cd" \\
-        --phone 5511999998888 --channel whatsapp
+        --phone 14254147167
 
     # Same person, different channel — history is shared (keyed by identity):
-    uv run test-scripts/test-channel.py "status?" \\
-        --phone 5521988887777 --channel sms
+    uv run test-scripts/test-channel.py "status?" --phone 14254147755 --channel whatsapp
 
     # Offline: just print the SNS envelope, no AWS calls at all:
     uv run test-scripts/test-channel.py "hello" --print-event
@@ -61,6 +63,34 @@ from utils import get_stack_config, print_msg, print_section  # noqa: E402
 
 CHANNEL_WHATSAPP = "whatsapp"
 CHANNEL_SMS = "sms"
+
+# EUM SMS demo identities. Defaults live in infra-cdk/config.yaml ->
+# conformity.sms.demo_identities: a `+33` identity is a real handset reached via
+# the CONFORMITE sender ID, `+1 425…` numbers are simulator destinations.
+DEFAULT_TECHNICIAN = "14254147755"   # simulator "success" destination
+DEFAULT_EXPERT = "14254147167"       # simulator "failure" destination
+DEFAULT_ORIGINATION = "12065552684"  # our simulator number (+1 206 555 2684)
+LEGACY_TECHNICIAN = "5521988887777"
+LEGACY_EXPERT = "5511999998888"
+
+
+def demo_defaults() -> tuple:
+    """(technician, expert, our-number) from config.yaml, with fallbacks."""
+    try:
+        import yaml
+
+        path = Path(__file__).parent.parent / "infra-cdk" / "config.yaml"
+        with open(path, "r") as handle:
+            config = yaml.safe_load(handle) or {}
+        sms = ((config.get("conformity") or {}).get("sms") or {})
+        identities = sms.get("demo_identities") or {}
+        return (
+            identities.get("technician", DEFAULT_TECHNICIAN),
+            identities.get("expert", DEFAULT_EXPERT),
+            DEFAULT_ORIGINATION,
+        )
+    except Exception:
+        return DEFAULT_TECHNICIAN, DEFAULT_EXPERT, DEFAULT_ORIGINATION
 
 # The region the stack lives in (from config.yaml). Filled in by main() before
 # any envelope is built; the ARNs in the WhatsApp fixture are only cosmetic, so
@@ -192,7 +222,7 @@ def tail_reply(logs, log_group: str, start_ms: int, timeout_s: int = 90) -> list
             resp = logs.filter_log_events(
                 logGroupName=log_group,
                 startTime=start_ms,
-                filterPattern='?MOCK_ ?"resolved" ?ERROR ?"reply"',
+                filterPattern='?MOCK_ ?REPLY ?ERROR ?"resolved"',
             )
         except logs.exceptions.ResourceNotFoundException:
             print_msg(f"Log group not found yet: {log_group}", "info")
@@ -205,8 +235,9 @@ def tail_reply(logs, log_group: str, start_ms: int, timeout_s: int = 90) -> list
                 seen.append(message)
                 print(message)
 
-        # The handler logs the MOCK_<CHANNEL> line last; stop once we see it.
-        if any("MOCK_" in line for line in seen):
+        # The handler logs the reply last: MOCK_<CHANNEL> when the send is mocked,
+        # REPLY when it really dispatched (SMS on the simulator).
+        if any("MOCK_" in line or "REPLY " in line for line in seen):
             break
         time.sleep(3)
     return seen
@@ -225,8 +256,9 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("text", nargs="?", default="", help="Message text to send")
     parser.add_argument("--text", dest="text_flag", default=None,
                         help="Message text (alternative to the positional argument)")
-    parser.add_argument("--phone", default="5521988887777",
-                        help="Sender phone in digits (5511999998888 = seeded expert)")
+    parser.add_argument("--phone", default=None,
+                        help="Sender phone in digits. Defaults to the SMS simulator "
+                             "technician identity for --channel sms, else 5521988887777")
     parser.add_argument("--channel", default=CHANNEL_WHATSAPP,
                         choices=[CHANNEL_WHATSAPP, CHANNEL_SMS],
                         help="Channel to simulate (default: whatsapp)")
@@ -235,8 +267,9 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--origination-id",
                         default="976c72a700aac43eaf573ae0500example",
                         help="AWS origination phone number id (used to address replies)")
-    parser.add_argument("--destination", default="15550001111",
-                        help="Our number the SMS was sent to (SMS only)")
+    parser.add_argument("--destination", default=None,
+                        help="Our number the SMS was sent to (defaults to the "
+                             "simulator origination for --channel sms, else 15550001111)")
     parser.add_argument("--print-event", action="store_true",
                         help="Print the SNS envelope and exit (no AWS calls)")
     parser.add_argument("--tail-only", action="store_true",
@@ -247,6 +280,11 @@ def parse_arguments() -> argparse.Namespace:
 def main() -> None:
     global REGION
     args = parse_arguments()
+    technician, expert, our_number = demo_defaults()
+    if args.phone is None:
+        args.phone = technician if args.channel == CHANNEL_SMS else LEGACY_TECHNICIAN
+    if args.destination is None:
+        args.destination = our_number if args.channel == CHANNEL_SMS else "15550001111"
     text = args.text_flag if args.text_flag is not None else args.text
     if not text and not args.tail_only:
         print_msg("A message is required (positional or --text)", "error")

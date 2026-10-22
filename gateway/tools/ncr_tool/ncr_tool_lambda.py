@@ -64,9 +64,16 @@ def search_ncr_history(query: str, top_k: int = 5) -> str:
             text = str(meta.get("x-amz-bedrock-kb-description", "")).strip()
         if not text:
             continue
+        # Text NCRs are ingested with a `record_id:` header line. That id is the
+        # only thing the agent can usefully cite, so prefer it over the opaque
+        # chunk id (which used to be surfaced and meant nothing to a reader).
+        record_id = ""
+        first_line = text.splitlines()[0] if text else ""
+        if first_line.lower().startswith("record_id:"):
+            record_id = first_line.split(":", 1)[1].strip()
         results.append(
             {
-                "ref": str(meta.get("x-amz-bedrock-kb-chunk-id", ""))[:8],
+                "ref": record_id or str(meta.get("x-amz-bedrock-kb-chunk-id", ""))[:8],
                 "source": str(
                     meta.get("x-amz-bedrock-kb-source-uri")
                     or meta.get("x-amz-bedrock-kb-byte-content-source")

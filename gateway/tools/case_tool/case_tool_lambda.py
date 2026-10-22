@@ -182,13 +182,31 @@ def list_cases(status: str = "") -> str:
             status = status or STATUS_PENDING
             resp = _table().query(IndexName="status-index",
                                   KeyConditionExpression=Key("status").eq(status))
+            items = resp.get("Items", [])
+            note = ""
         else:
-            condition = Key("created_by").eq(caller.get("identity"))
+            # Query by created_by ONLY. The created_by-index has a single key
+            # attribute, so adding `status` to KeyConditionExpression makes
+            # DynamoDB reject the query (ValidationException) - observed live:
+            # the model passed status=PENDING_VALIDATION, the tool errored,
+            # and the model then answered "status" from memory. Filter the
+            # status in Python instead.
+            resp = _table().query(
+                IndexName="created_by-index",
+                KeyConditionExpression=Key("created_by").eq(caller.get("identity")))
+            items = resp.get("Items", [])
+            note = ""
             if status:
-                condition &= Key("status").eq(status)
-            resp = _table().query(IndexName="created_by-index",
-                                  KeyConditionExpression=condition)
-        items = sorted(resp.get("Items", []),
+                filtered = [c for c in items if c.get("status") == status]
+                if filtered:
+                    items = filtered
+                elif items:
+                    # A guessed status filter that matches nothing must not
+                    # hide the real answer: fall back to all of the caller's
+                    # cases and say so.
+                    note = (f"no case has status {status}; "
+                            "all of your cases are listed with their current status")
+        items = sorted(items,
                        key=lambda i: i.get("created_at", 0), reverse=True)
     except Exception as err:
         logger.error("list_cases failed: %s", err)
@@ -198,7 +216,10 @@ def list_cases(status: str = "") -> str:
                                       "created_by", "urgency")})
         for c in items
     ]
-    return _jdump({"count": len(summary), "cases": summary})
+    payload = {"count": len(summary), "cases": summary}
+    if note:
+        payload["note"] = note
+    return _jdump(payload)
 
 
 def record_validation(case_id: str, decision: str, comment: str = "") -> str:

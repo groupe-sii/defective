@@ -16,6 +16,13 @@ export class CognitoConstruct extends Construct {
   public userPoolId: string
   public userPoolClientId: string
   public userPoolDomain: cognito.UserPoolDomain
+  /**
+   * The V3 Pre-Token Lambda. It needs the contacts table (name + read access),
+   * which lives in the backend construct — created after this one — so
+   * fast-main-stack wires that in. Without it the Lambda cannot resolve a role
+   * and silently stamps every token `role=technician`.
+   */
+  public preTokenLambda!: lambda.Function
 
   constructor(scope: Construct, id: string, props: CognitoConstructProps) {
     super(scope, id)
@@ -164,6 +171,7 @@ export class CognitoConstruct extends Construct {
     // Store the IDs for export
     this.userPoolId = userPool.userPoolId
     this.userPoolClientId = userPoolClient.userPoolClientId
+    this.preTokenLambda = preTokenLambda
 
     // Create admin user if email is provided in config
     if (config.admin_user_email) {

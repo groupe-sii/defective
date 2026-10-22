@@ -310,7 +310,12 @@ def handle_create(props: dict) -> dict:
     policy_id = policy_ids[0]
 
     # Step 3: Attach Policy Engine to Gateway
-    _attach_policy_engine_to_gateway(gateway_id, policy_engine_arn)
+    _attach_policy_engine_to_gateway(
+        gateway_id,
+        policy_engine_arn,
+        props.get("PolicyEngineMode", "ENFORCE"),
+        props.get("InterceptorLambdaArn", ""),
+    )
 
     # Encode engine + first policy ID in PhysicalResourceId for use in Update/Delete
     physical_id = f"{policy_engine_id}|{policy_id}"
@@ -371,21 +376,21 @@ def handle_update(event: dict, props: dict) -> dict:
     new_policy_id = new_policy_ids[0]
     logger.info(f"New Cedar Policies created: {new_policy_ids}")
 
-    # Verify the Policy Engine is still attached to the Gateway.
-    # A previous failed deployment rollback or manual change may have detached it.
-    logger.info("Verifying Policy Engine is attached to Gateway...")
-    gateway = client.get_gateway(gatewayIdentifier=gateway_id)
-    pe_config = gateway.get("policyEngineConfiguration") or {}
-
-    if not pe_config.get("arn"):
-        # Policy Engine is detached — re-attach it
-        logger.warning("Policy Engine is detached from Gateway — re-attaching...")
-        engine_details = client.get_policy_engine(policyEngineId=policy_engine_id)
-        policy_engine_arn = engine_details["policyEngineArn"]
-        _attach_policy_engine_to_gateway(gateway_id, policy_engine_arn)
-        logger.info("Policy Engine re-attached to Gateway successfully")
-    else:
-        logger.info("Policy Engine is attached to Gateway")
+    # Always (re-)attach. This runs on every deploy because the CDK resource
+    # carries a DeploymentTimestamp property: CloudFormation rewrites the gateway
+    # on unrelated changes (e.g. a new interceptor) without
+    # `policyEngineConfiguration`, which silently detaches Cedar. Re-attaching
+    # here also applies a mode change (LOG_ONLY <-> ENFORCE).
+    logger.info("Ensuring Policy Engine is attached to Gateway...")
+    engine_details = client.get_policy_engine(policyEngineId=policy_engine_id)
+    policy_engine_arn = engine_details["policyEngineArn"]
+    _attach_policy_engine_to_gateway(
+        gateway_id,
+        policy_engine_arn,
+        props.get("PolicyEngineMode", "ENFORCE"),
+        props.get("InterceptorLambdaArn", ""),
+    )
+    logger.info("Policy Engine attach verified")
 
     # CRITICAL: Return the SAME PhysicalResourceId as the original resource.
     # Returning a new ID (e.g., with new_policy_id) causes CloudFormation to
@@ -520,30 +525,68 @@ def _delete_managed_policies(
         logger.warning(f"Could not list policies in engine: {e}")
 
 
-def _attach_policy_engine_to_gateway(gateway_id: str, policy_engine_arn: str) -> None:
+def _attach_policy_engine_to_gateway(
+    gateway_id: str,
+    policy_engine_arn: str,
+    mode: str = "ENFORCE",
+    interceptor_lambda_arn: str = "",
+) -> None:
     """
     Attach a Policy Engine to a Gateway and wait for the Gateway to become READY.
 
     Args:
         gateway_id: The Gateway identifier.
         policy_engine_arn: The Policy Engine ARN to attach.
+        mode: "ENFORCE" (deny for real) or "LOG_ONLY" (trace only).
+        interceptor_lambda_arn: The REQUEST interceptor Lambda declared by CDK.
+            Used to restore the interceptor if the gateway has lost it. A
+            gateway with no interceptor gives every tool call an empty caller
+            identity, which breaks created_by/role scoping without any error.
     """
-    logger.info(f"Attaching Policy Engine {policy_engine_arn} to Gateway {gateway_id}")
+    logger.info(f"Attaching Policy Engine {policy_engine_arn} to Gateway {gateway_id} ({mode})")
 
     gateway = client.get_gateway(gatewayIdentifier=gateway_id)
 
-    client.update_gateway(
-        gatewayIdentifier=gateway_id,
-        name=gateway.get("name"),
-        roleArn=gateway.get("roleArn"),
-        protocolType=gateway.get("protocolType", "MCP"),
-        authorizerType=gateway.get("authorizerType", "CUSTOM_JWT"),
-        authorizerConfiguration=gateway.get("authorizerConfiguration"),
-        policyEngineConfiguration={
+    # Echo every mutable field the gateway already has. UpdateGateway replaces
+    # the configuration it is given, so omitting `interceptorConfigurations`
+    # here would silently drop the identity-propagation interceptor.
+    update: dict = {
+        "gatewayIdentifier": gateway_id,
+        "name": gateway.get("name"),
+        "roleArn": gateway.get("roleArn"),
+        "protocolType": gateway.get("protocolType", "MCP"),
+        "authorizerType": gateway.get("authorizerType", "CUSTOM_JWT"),
+        "authorizerConfiguration": gateway.get("authorizerConfiguration"),
+        "policyEngineConfiguration": {
             "arn": policy_engine_arn,
-            "mode": "ENFORCE",
+            "mode": mode,
         },
-    )
+    }
+    for key in ("description", "protocolConfiguration"):
+        if gateway.get(key):
+            update[key] = gateway[key]
+
+    interceptors = gateway.get("interceptorConfigurations") or []
+    if not interceptors and interceptor_lambda_arn:
+        # The template declares this interceptor, but CloudFormation only
+        # reconciles it when the gateway resource itself changes. Restoring it
+        # here means a detached interceptor heals on the next deploy instead of
+        # silently costing every tool its caller identity.
+        logger.warning(
+            "Gateway has no interceptor - restoring the REQUEST interceptor %s",
+            interceptor_lambda_arn,
+        )
+        interceptors = [
+            {
+                "interceptionPoints": ["REQUEST"],
+                "interceptor": {"lambda": {"arn": interceptor_lambda_arn}},
+                "inputConfiguration": {"passRequestHeaders": True},
+            }
+        ]
+    if interceptors:
+        update["interceptorConfigurations"] = interceptors
+
+    client.update_gateway(**update)
 
     _wait_for_gateway_ready(gateway_id)
     logger.info("Policy Engine attached to Gateway successfully")

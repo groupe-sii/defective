@@ -10,6 +10,8 @@ import * as logs from "aws-cdk-lib/aws-logs"
 import * as s3 from "aws-cdk-lib/aws-s3"
 import * as sns from "aws-cdk-lib/aws-sns"
 import * as snsSubs from "aws-cdk-lib/aws-sns-subscriptions"
+import * as sqs from "aws-cdk-lib/aws-sqs"
+import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch"
 import * as kms from "aws-cdk-lib/aws-kms"
 import * as agentcore from "aws-cdk-lib/aws-bedrockagentcore"
 import { PythonFunction } from "@aws-cdk/aws-lambda-python-alpha"
@@ -39,6 +41,8 @@ export class BackendConstruct extends Construct {
   public memoryArn: string
   public readonly casesTable: dynamodb.Table
   public readonly contactsTable: dynamodb.Table
+  public readonly transcriptTable: dynamodb.Table
+  public readonly dedupeTable: dynamodb.Table
   public readonly channelTopic: sns.Topic
   private readonly region: string
   private readonly account: string
@@ -82,6 +86,8 @@ export class BackendConstruct extends Construct {
     // Created before the Gateway/Runtime so both can reference them.
     this.contactsTable = this.createContactsTable(props.config)
     this.casesTable = this.createCasesTable(props.config)
+    this.transcriptTable = this.createTranscriptTable(props.config)
+    this.dedupeTable = this.createDedupeTable(props.config)
     this.channelTopic = this.createChannelTopic(props.config)
 
     // DEPLOYMENT ORDER EXPLANATION:
@@ -1223,6 +1229,27 @@ export class BackendConstruct extends Construct {
         // The AgentCore API enforces a 48-character limit on policy names.
         PolicyEngineName: `${config.stack_name_base.replace(/-/g, "_")}_policy_engine`,
         Description: "Conformity tool access control: record_validation is expert-only",
+        // Enforcement mode of the attached policy engine. ENFORCE really denies;
+        // LOG_ONLY only traces. See conformity.policy_engine_mode in config.yaml.
+        PolicyEngineMode: config.conformity?.policy_engine_mode ?? "ENFORCE",
+        // Attaching the engine goes through UpdateGateway, which replaces the
+        // gateway configuration it is given. Passing the interceptor ARN lets
+        // the resource echo it (and restore it if the gateway ever lost it) so
+        // attaching Cedar cannot silently disable identity propagation.
+        InterceptorLambdaArn: gatewayInterceptorLambda.functionArn,
+        // The engine is attached to the gateway by this custom resource (step 3
+        // of the AgentCore Policy sequence), not by the CfnGateway property:
+        // the engine ARN only exists after this resource runs, so referencing it
+        // from the gateway would be circular (gateway -> policy -> targets ->
+        // gateway).
+        //
+        // The catch is drift: a plain `cdk deploy` that changes the gateway
+        // (e.g. a new interceptor) makes CloudFormation rewrite the gateway
+        // without `policyEngineConfiguration`, which silently DETACHES Cedar.
+        // CloudFormation only re-runs a custom resource when its properties
+        // change, so this timestamp forces it to run on every deploy and
+        // re-attach the engine if it was detached (handle_update verifies).
+        DeploymentTimestamp: new Date().toISOString(),
       },
     })
 
@@ -1333,6 +1360,45 @@ export class BackendConstruct extends Construct {
   }
 
   /**
+   * Inbound dedupe store.
+   *
+   * One row per provider message id, claimed with a conditional PutItem before
+   * the handler does any work. TTL keeps it tiny. Necessary now that outbound
+   * replies are really sent: an SNS retry would send a second SMS.
+   */
+  private createDedupeTable(config: AppConfig): dynamodb.Table {
+    return new dynamodb.Table(this, "DedupeTable", {
+      tableName: `${config.stack_name_base}-dedupe`,
+      partitionKey: { name: "message_id", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      encryption: dynamodb.TableEncryption.AWS_MANAGED,
+      timeToLiveAttribute: "expires_at",
+    })
+  }
+
+  /**
+   * Conversation transcript store.
+   *
+   * One row per message, partitioned by the person (channel-independent) so a
+   * conversation reads back with a single Query. Written by the channel handler
+   * for both directions; read by the ops console and the local phone emulator.
+   * Demo data, so it expires via TTL instead of growing forever.
+   */
+  private createTranscriptTable(config: AppConfig): dynamodb.Table {
+    const table = new dynamodb.Table(this, "TranscriptTable", {
+      tableName: `${config.stack_name_base}-transcript`,
+      partitionKey: { name: "identity", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "ts", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      encryption: dynamodb.TableEncryption.AWS_MANAGED,
+      timeToLiveAttribute: "expires_at",
+    })
+    return table
+  }
+
+  /**
    * Non-conformity case store.
    *
    * PK case_id; two GSIs mirror the POC's template.yaml exactly so the ported
@@ -1429,6 +1495,13 @@ export class BackendConstruct extends Construct {
         CONTACTS_TABLE: this.contactsTable.tableName,
         MOCK_CHANNELS: config.conformity!.mock_channels,
         CONTRACTOR_EMAIL_FROM: config.conformity!.contractor_email_from,
+        SMS_ORIGINATION_IDENTITY: config.conformity!.sms.origination_identity,
+        SMS_MESSAGE_TYPE: config.conformity!.sms.message_type,
+        SMS_ORIGINATION_BY_COUNTRY: JSON.stringify(
+          config.conformity!.sms.origination_by_country
+        ),
+        TRANSCRIPT_TABLE: this.transcriptTable.tableName,
+        DEDUPE_TABLE: this.dedupeTable.tableName,
       },
       logGroup: new logs.LogGroup(this, "ChannelHandlerLogGroup", {
         logGroupName: `/aws/lambda/${config.stack_name_base}-channel-handler`,
@@ -1439,6 +1512,8 @@ export class BackendConstruct extends Construct {
 
     // Resolve inbound phone -> Cognito identity.
     this.contactsTable.grantReadData(channelHandler)
+    // Append both directions of every conversation to the transcript store.
+    this.transcriptTable.grantWriteData(channelHandler)
 
     // Invoke the runtime on behalf of a user. The ForUser permission is the one
     // that authorizes setting the runtime-user-id header.
@@ -1470,12 +1545,49 @@ export class BackendConstruct extends Construct {
       })
     )
 
+    // Claim provider message ids before processing, so an SNS retry cannot send
+    // a second SMS reply.
+    this.dedupeTable.grantReadWriteData(channelHandler)
+
+    // Dead-letter queue for messages the handler could not process at all. SNS
+    // retries a failing subscription for ~23 hours and then drops the message;
+    // the DLQ keeps it, and the alarm below makes that visible.
+    const deadLetterQueue = new sqs.Queue(this, "ChannelHandlerDlq", {
+      queueName: `${config.stack_name_base}-channel-dlq`,
+      retentionPeriod: cdk.Duration.days(14),
+      encryption: sqs.QueueEncryption.SQS_MANAGED,
+    })
+
     // Subscribe the handler to the inbound topic. RawMessageDelivery keeps the
     // payload to the channel envelope; without it SNS wraps in an Sns record
     // (the handler understands both shapes, matching the POC).
     this.channelTopic.addSubscription(
-      new snsSubs.LambdaSubscription(channelHandler)
+      new snsSubs.LambdaSubscription(channelHandler, {
+        deadLetterQueue,
+      })
     )
+
+    // Two alarms are enough for this workload: messages we failed to handle and
+    // messages that never even reached the handler.
+    new cloudwatch.Alarm(this, "ChannelHandlerErrorsAlarm", {
+      alarmDescription: "Channel handler is failing to process inbound messages",
+      metric: channelHandler.metricErrors({ period: cdk.Duration.minutes(5) }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    })
+
+    new cloudwatch.Alarm(this, "ChannelDlqDepthAlarm", {
+      alarmDescription: "Inbound messages are landing in the dead-letter queue",
+      metric: deadLetterQueue.metricApproximateNumberOfMessagesVisible({
+        period: cdk.Duration.minutes(5),
+      }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    })
 
     new cdk.CfnOutput(this, "ChannelHandlerArn", {
       description: "ARN of the inbound channel handler Lambda",

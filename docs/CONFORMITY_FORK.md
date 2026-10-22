@@ -80,6 +80,28 @@ Promoting someone to expert is a DynamoDB `put_item` (see
 technician is not merely refused `record_validation` — the tool is **hidden from
 their agent session entirely**.
 
+Two wiring details are easy to get wrong, and both fail *silently*:
+
+1. **The Pre-Token Lambda needs the contacts table.** It is created by
+   `cognito-construct.ts`, before the backend that owns the table, so
+   `fast-main-stack.ts` injects `CONTACTS_TABLE` and grants read access after
+   the backend exists. Missing that env var does not error: `_resolve_role`
+   falls back to `DEFAULT_ROLE = "technician"`, so every token — the expert's
+   included — carries `role=technician`.
+2. **The policy engine must be attached to the gateway.** Creating the engine
+   and the Cedar policy is only steps 1 and 2 of the documented sequence. Here
+   the `cedar-policy` custom resource performs step 3, and the CDK resource
+   carries a `DeploymentTimestamp` property so it re-runs on every deploy and
+   re-attaches the engine. That is not paranoia: CloudFormation only re-runs a
+   custom resource when its properties change, and any gateway update made from
+   the template (a new interceptor, say) rewrites the gateway *without*
+   `policyEngineConfiguration`, silently detaching Cedar. The mode comes from
+   `conformity.policy_engine_mode`. Referencing the engine ARN from the
+   `CfnGateway` instead is circular (gateway → policy → targets → gateway).
+
+Verify with `aws bedrock-agentcore-control get-gateway`: it must show the
+policy engine ARN and `ENFORCE`.
+
 ### 4. History is AgentCore Memory, keyed by person
 
 The POC stored one DynamoDB row per `(identity, day)` and hand-rolled replay
@@ -96,6 +118,14 @@ properties fall out for free, one of which the POC had to engineer on purpose:
 
 `session_id` is derived from identity + UTC day by the channel handler,
 reproducing the POC's "one conversation per person per day".
+
+**Restored tool context is filtered** (`filter_restored_tool_context=True` in
+`basic_agent.py`). User and assistant messages are replayed, but historical
+`toolUse`/`toolResult` blocks are dropped. This was a live bug: a technician who
+created a case and then asked "status" *after* the expert had approved it was
+answered "PENDING_VALIDATION" — the model read the stale `create_case` payload
+from memory and never called `list_cases`. Stripping tool context forces a fresh
+tool call whenever the answer depends on state.
 
 ### 5. Tools are Gateway targets, not in-process `@tool`s
 
@@ -164,15 +194,26 @@ identity.
 
 ---
 
-## Knowledge Base caveat
+## Knowledge Base: images *and* text NCRs
 
-`hackaton-nci` is currently **image-only**: `Retrieve` returns `byteContent`
-PNGs whose captions live in the `x-amz-bedrock-kb-description` metadata key.
+The KB (`hackaton-nci`, `GXY5L19KJX`) was seeded with the defect dataset images,
+so `Retrieve` returned `byteContent` PNGs whose captions live in the
+`x-amz-bedrock-kb-description` metadata key.
 
-`gateway/tools/ncr_tool/ncr_tool_lambda.py` never surfaces base64 — it returns
-the caption as `summary` with `modality: image`. When real text NCRs are
-ingested the same code returns `modality: text` with **no change**, because it
-already prefers `content.text` and only falls back to the caption.
+`scripts/ingest-ncr-text.py` fixes that: it publishes the 92 synthetic NCRs that
+the repo already carries (`data/ncr_cable_synthetiques_bundle/`, French, one per
+image) to `s3://hackaton-nci-ingest/ncr-text/` and runs an ingestion job.
+Retrieval now returns `modality: text` with real prose, and the tool surfaces the
+report id (parsed from the `record_id:` header) as `ref`, so the agent can cite
+`NCR-SYN-CABLE-BENT-WIRE-000` instead of an opaque chunk id.
+
+`gateway/tools/ncr_tool/ncr_tool_lambda.py` still never surfaces base64: image
+chunks fall back to the caption with `modality: image`.
+
+```bash
+uv run scripts/ingest-ncr-text.py --dry-run   # what would be uploaded
+uv run scripts/ingest-ncr-text.py             # upload + ingest + wait
+```
 
 ---
 

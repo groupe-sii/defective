@@ -53,7 +53,7 @@
   },
   {
     "name": "list_cases",
-    "description": "List non-conformity cases. The conformity expert gets the validation queue (status PENDING_VALIDATION by default); a technician gets their own cases, optionally filtered by status.",
+    "description": "List non-conformity cases. The conformity expert gets the validation queue (status PENDING_VALIDATION by default); a technician gets their own cases. The optional status filter narrows the list; when it matches nothing the caller's cases are returned with their current status instead, so the answer always reflects live data.",
     "inputSchema": {
       "type": "object",
       "properties": {

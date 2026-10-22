@@ -27,6 +27,39 @@ ALL_CHANNELS = (CHANNEL_WHATSAPP, CHANNEL_SMS, CHANNEL_EMAIL, CHANNEL_RCS)
 
 DEFAULT_MOCK_CHANNELS = ",".join(ALL_CHANNELS)
 
+# Minimal E.164 dialling-code -> ISO country map, only for countries this fork
+# actually has an origination for. Longest prefix wins, so add longer codes
+# before reusing a shorter one.
+_COUNTRY_BY_DIAL_CODE = {
+    "33": "FR",
+    "1": "US",
+}
+
+
+def country_for(number: str) -> str:
+    """ISO country for an E.164 number in digits ('33670022195' -> 'FR')."""
+    digits = "".join(ch for ch in str(number or "") if ch.isdigit())
+    for code in sorted(_COUNTRY_BY_DIAL_CODE, key=len, reverse=True):
+        if digits.startswith(code):
+            return _COUNTRY_BY_DIAL_CODE[code]
+    return ""
+
+
+def origination_for_country(number: str) -> str:
+    """Origination identity to send *to* `number`, or "" for the default.
+
+    EUM has no origination that reaches every country: the demo simulator is
+    US-only, France needs the CONFORMITE sender ID (a sender ID cannot message a
+    US simulator destination, and vice versa). Overrides come from
+    `conformity.sms.origination_by_country`, deployed as JSON.
+    """
+    try:
+        overrides = json.loads(os.getenv("SMS_ORIGINATION_BY_COUNTRY", "") or "{}")
+    except json.JSONDecodeError:
+        logger.error("SMS_ORIGINATION_BY_COUNTRY is not valid JSON; using the default")
+        return ""
+    return overrides.get(country_for(number), "")
+
 
 def mocked_channels() -> set:
     """Channels to keep in demo mode, from MOCK_CHANNELS (CSV)."""
@@ -84,21 +117,40 @@ def _send_whatsapp(sender: str, text: str, phone_number_id: str = "", message_id
     return response
 
 
-def _send_sms(sender: str, text: str, origination_number: str = "", **_ignored) -> dict:
+def _send_sms(sender: str, text: str, origination_identity: str = "",
+              origination_number: str = "", **_ignored) -> dict:
     """Send an SMS via AWS End User Messaging (Pinpoint SMS Voice v2).
 
-    Phase 3 requires: an origination number configured for the destination
-    country, and MOCK_CHANNELS without "sms".
+    `OriginationIdentity` accepts a phone-number id/ARN, a pool id, or an
+    alphanumeric sender ID. France has no long codes through the API, but
+    alphanumeric sender IDs need no registration there (only the rule that
+    since 2026-03-01 they must be a-z/A-Z/0-9 with no dashes).
+
+    Config wins over the inbound recipient: the deployed origination is the
+    stable identity, while a demo envelope's destinationNumber is synthetic.
     """
     import boto3
+
+    identity = (
+        origination_identity
+        or origination_for_country(sender)
+        or os.getenv("SMS_ORIGINATION_IDENTITY", "")
+        or origination_number
+    )
+    if not identity:
+        raise RuntimeError(
+            "No SMS origination identity: set conformity.sms.origination_identity "
+            "in config.yaml (or keep 'sms' in MOCK_CHANNELS)"
+        )
 
     client = boto3.client("pinpoint-sms-voice-v2")
     response = client.send_text_message(
         DestinationPhoneNumber=f"+{sender}",
-        OriginationPhoneNumber=origination_number,
+        OriginationIdentity=identity,
         MessageBody=text,
+        MessageType=os.getenv("SMS_MESSAGE_TYPE", "TRANSACTIONAL"),
     )
-    logger.info("SMS reply sent to %s: %s", sender, response)
+    logger.info("SMS reply sent to %s from %s: %s", sender, identity, response)
     return response
 
 

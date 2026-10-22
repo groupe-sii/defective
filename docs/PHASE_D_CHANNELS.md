@@ -114,12 +114,95 @@ out of the SES sandbox or verify the contractor address, then set
 Order: SES last, because a sandboxed account still needs every recipient verified
 and the contractor address is a placeholder today.
 
-## D4 — SMS (deferred)
+## D4 — SMS via the EUM simulator (the demo transport)
 
-No origination identity exists. Brazilian (+55) destinations need a local long
-code or toll-free number with registration; alphanumeric sender IDs are generally
-not supported for BR. Keep `sms` mocked until a number is provisioned; the code
-path (`pinpoint-sms-voice-v2 SendTextMessage`) and IAM are already in place.
+SMS is the first channel to go real because it needs nothing external (no Meta,
+no WABA, no phone). We run it on the **EUM SMS simulator**, which keeps every
+message inside End User Messaging and emits realistic delivery events.
+
+Verified live on 2026-10-22 (account 160885249481, eu-west-1):
+
+| Constraint | Consequence |
+|---|---|
+| Origination simulators exist **only in the US** | both demo identities are US numbers |
+| A simulator origination can only message destination simulators **in its own country** (`INVALID_IDENTITY_FOR_DESTINATION_COUNTRY`) | French destinations are impossible — a French simulator number is rejected |
+| Destination simulators are **fixed, publishable numbers** (one "success", one "failure" per country) | no provisioning, no verification, no OTP |
+| Account is in the **sandbox** ($1/month) | irrelevant here: simulator destination numbers are exempt from verification |
+| A simulator number is **one-way** | inbound stays synthetic (see below) |
+
+Provisioned and wired:
+
+```
+origination  +12065552684  id=phone-87bc52bcebf244de87fda9b90c42fec1  ($1/mo)
+technician   +14254147755  US "success" destination -> TEXT_DELIVERED
+expert       +14254147167  US "failure" destination -> delivery-failure event
+```
+
+Both numbers are seeded as *identities*, not devices: the edge map of the whole
+system is `phone -> actor`. The technician is an unseeded number (everyone
+unknown is a technician); `14254147167` is seeded `role=expert` in the contacts
+table, so it can approve. The failure destination is deliberate: it proves the
+delivery-failure path and costs nothing.
+
+```bash
+uv run scripts/provision-sms.py --simulator       # request/inspect the origination
+uv run scripts/provision-sms.py --list            # tier, sender IDs, simulators, config
+uv run test-scripts/test-channel.py "Pump P-101 is leaking at the seal"
+uv run test-scripts/test-channel.py "approve NC-20261021-ab12cd" --phone 14254147167
+```
+
+The demo loop: the inbound envelope is synthetic (a real carrier cannot deliver
+to a simulator number), everything after it is the production path — SNS →
+channel handler → actor/role resolution → AgentCore Runtime (Nova Pro + Memory +
+Gateway MCP tools) → Cedar-gated `create_case` → **real `SendTextMessage`** →
+EUM delivery event. `MOCK_SMS` no longer appears because `sms` is out of
+`conformity.mock_channels`.
+
+### recording the demo
+
+`scripts/phone-emulator.py` serves `demo/phone-emulator.html`: two phone frames
+(technician = success destination, expert = failure destination) for the video.
+Typing in a frame publishes the real inbound envelope; the assistant bubbles are
+read from `conformity-agent-transcript`, which the channel handler writes for
+both directions (TTL 7 days, `TranscriptTableName` stack output). So the UI shows
+the agent's actual answers after the real tool calls — only the carrier is
+simulated, which is what the EUM simulator is.
+
+```bash
+uv run scripts/phone-emulator.py     # http://localhost:8787
+```
+
+### the French path (kept for a real deployment)
+
+Also verified live, in case the demo is ever run with a real phone:
+
+* `RequestPhoneNumber(FR, LONG_CODE)` answers "This number requires a
+  registration", and **no `FR_LONG_CODE_*` / `FR_SENDER_ID_*` registration type
+  exists** — so a French long code is unavailable to this account.
+* French **alphanumeric sender IDs need no registration**. `CONFORMITE` is
+  provisioned at $0/month (`Registered: false`, 10 msg/s), and satisfies the
+  only rule (since 2026-03-01): a-z/A-Z/0-9, no dashes.
+* Sandbox: SMS can only reach **verified destination numbers** (max 10), and the
+  verification code may only be sent by an origination from the *destination's*
+  country. A dry-run `SendTextMessage` from `CONFORMITE` passes origination
+  validation and fails only with `DESTINATION_PHONE_NUMBER_NOT_VERIFIED`.
+  `--add +33670022195` did send a code from the sender ID (status `PENDING`), so
+  a sender ID *is* accepted as the verification origination — the code simply
+  did not reach the handset, so the simulator path won.
+* Real inbound SMS with French numbers remains impossible (no two-way
+  origination); WhatsApp is the only genuine inbound channel.
+
+Setup, if a real phone is ever available:
+
+```bash
+uv run scripts/provision-sms.py --add    +33612345678
+uv run scripts/provision-sms.py --verify +33612345678 --code 123456
+uv run scripts/provision-sms.py --send   +33612345678 --text "hello" --dry-run
+```
+
+Then set `conformity.sms.origination_identity` back to the `CONFORMITE` ARN.
+Removing the sandbox restrictions (verified-number list, $1 cap) is a Support
+quota request for `SMS Production Access`.
 
 ## D5 — Hardening (no channel needed, do this first)
 
@@ -141,8 +224,8 @@ path (`pinpoint-sms-voice-v2 SendTextMessage`) and IAM are already in place.
 | Step | Depends on | Notes |
 |---|---|---|
 | D5 hardening + D1.2/D1.3 policies + D2.2/D2.4 code | nothing | deployable today, behaviour unchanged while mocked |
+| D4 simulator origination + flip `sms` out of `mock_channels` | nothing | **done** — real `SendTextMessage`, EUM events, no phone needed |
 | D0 link the WABA | Meta admin + a number | manual, external |
 | D1.1 event destination + D1.5 inbound test | D0 | `scripts/configure-whatsapp.py` |
 | D2 flip `mock_channels` + real outbound test | D0 | two phones: technician + expert |
 | D3 SES identity + `mock_email: false` | a verified domain | optional for the demo |
-| D4 SMS | a provisioned number | out of scope until then |

@@ -33,7 +33,8 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 CONTACTS_TABLE = os.environ.get("CONTACTS_TABLE", "")
-_REGION = os.environ.get("AWS_DEFAULT_REGION", "eu-west-1")
+# Lambda defines AWS_REGION; AWS_DEFAULT_REGION is reserved and cannot be set.
+_REGION = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "eu-west-1"))
 
 # Fail safe: an unknown user is the least-privileged role, never an expert.
 DEFAULT_ROLE = "technician"
