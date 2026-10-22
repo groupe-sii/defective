@@ -499,6 +499,27 @@ uv run test-scripts/test-channel.py "status?" \
 `test-scripts/test-channel.py --print-event` builds the SNS envelope offline
 with no AWS calls at all.
 
+### What was verified live
+
+Last full pass (deploy #18) covered the whole lifecycle on one stack, with the
+`mock_channels`/`mock_email` flags on:
+
+| Check | Result |
+|---|---|
+| WhatsApp inbound → `search_ncr_history` → `create_case` → `request_expert_validation` | reply with case id, row `PENDING_VALIDATION` |
+| `created_by` on the case row | `phone:<number>` (gateway interceptor) |
+| Expert in their own chat → `record_validation` | `APPROVED`, `validation.approver` = expert actor |
+| Technician asks `status` → `get_case` | `APPROVED` (own-case visibility) |
+| Technician requests the contractor e-mail → `send_contractor_email` | `CONTRACTOR_NOTIFIED`, mock notification recorded |
+| Expert asks for the queue → `list_cases` | the pending case |
+| Same number over SMS | recalls the WhatsApp conversation (Memory keyed by person) |
+| Technician *claiming* to be the expert | refused, no `record_validation` mentioned, case untouched |
+
+The middle three ran on **one warm channel-handler container** (one `INIT_START`,
+three `START` lines) — the sequence that used to fail with a SigV4 mismatch, see
+"The channel handler's `before-sign` handler is registered once per container".
+
+
 The seed step creates the Cognito user with a synthetic e-mail username,
 `<phone>@conformity.local`: the user pool is created with
 `UsernameAttributes: ['email']` (FAST's default), so `AdminCreateUser` rejects a
