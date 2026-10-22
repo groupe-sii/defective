@@ -1020,16 +1020,21 @@ export class BackendConstruct extends Construct {
     // Because the Cedar policy action format is "<targetName>___<toolName>",
     // the target names below MUST match gateway/policies/policy.cedar.
     //
-    // Target names use UNDERSCORES, never hyphens. The Gateway names each tool
-    // "<targetName>___<toolName>", and the model sees that as the tool name. A
-    // hyphen anywhere in a tool name makes Nova Pro's non-streaming Converse
-    // fail the whole turn with
-    //   modelStreamErrorException / ModelErrorException:
-    //   Model produced invalid sequence as part of ToolUse
-    // — proven by bisection in docs/CONFORMITY_FORK.md (same schema passes under
-    // an underscore-only name, fails under the identical name with hyphens).
+    // Target names are single alphanumeric words, with NO hyphens or
+    // underscores. Both halves of that rule are load-bearing:
+    //
+    //   * CDK rejects anything else:
+    //       «GatewayTargetNameInvalid» Gateway target name must contain only
+    //       alphanumeric characters and hyphens, with hyphens only between
+    //       characters
+    //     so it cannot be snake_case.
+    //   * The Gateway exposes each tool to the model as "<targetName>___<toolName>".
+    //     A hyphen anywhere in that string makes Nova Pro's Converse fail the
+    //     whole turn with "Model produced invalid sequence as part of ToolUse"
+    //     (proven by bisection — see docs/CONFORMITY_FORK.md), so it cannot be
+    //     kebab-case either.
     const ncrTarget = gateway.addLambdaTarget("NcrToolTarget", {
-      gatewayTargetName: "ncr_tool_target",
+      gatewayTargetName: "ncr",
       description: "Search past Non-Conformity Reports in the Bedrock KB",
       lambdaFunction: ncrToolLambda,
       toolSchema: agentcore.ToolSchema.fromLocalAsset(
@@ -1038,7 +1043,7 @@ export class BackendConstruct extends Construct {
     })
 
     const caseTarget = gateway.addLambdaTarget("CaseToolTarget", {
-      gatewayTargetName: "case_tool_target",
+      gatewayTargetName: "case",
       description: "Non-conformity case lifecycle: create, read, list, validate",
       lambdaFunction: caseToolLambda,
       toolSchema: agentcore.ToolSchema.fromLocalAsset(
@@ -1047,7 +1052,7 @@ export class BackendConstruct extends Construct {
     })
 
     const mailTarget = gateway.addLambdaTarget("MailToolTarget", {
-      gatewayTargetName: "mail_tool_target",
+      gatewayTargetName: "mail",
       description: "Contractor e-mail and expert-validation notification",
       lambdaFunction: mailToolLambda,
       toolSchema: agentcore.ToolSchema.fromLocalAsset(
@@ -1079,12 +1084,14 @@ export class BackendConstruct extends Construct {
     //
     // The Cedar action name format is: "<TargetName>___<tool_name>" (triple underscore).
     // THIS FORK's targets (see createAgentCoreGateway) are:
-    //   ncr_tool_target   -> search_ncr_history
-    //   case_tool_target  -> create_case, get_case, list_cases, record_validation
-    //   mail_tool_target  -> send_contractor_email, request_expert_validation
+    //   ncr   -> search_ncr_history
+    //   case  -> create_case, get_case, list_cases, record_validation
+    //   mail  -> send_contractor_email, request_expert_validation
     // Renaming a target here without editing gateway/policies/policy.cedar
     // silently denies every call on that target (Cedar is deny-by-default).
-    // Target names must stay hyphen-free (see the note in createAgentCoreGateway).
+    // Target names must stay a single alphanumeric word: hyphens are rejected by
+    // Nova Pro as part of a tool name, underscores are rejected by CDK (see the
+    // note in createAgentCoreGateway).
     //
     // The policy is two statements, both reading the "role" tag injected by the
     // Pre-Token Lambda from the contacts table:

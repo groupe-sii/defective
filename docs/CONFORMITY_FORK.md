@@ -104,9 +104,9 @@ Each POC tool file became an AgentCore Gateway Lambda target with a
 
 | Target | Tools | Backing store |
 |---|---|---|
-| `ncr_tool_target` | `search_ncr_history` | Bedrock KB `GXY5L19KJX` |
-| `case_tool_target` | `create_case`, `get_case`, `list_cases`, `record_validation` | `NonConformityCases` |
-| `mail_tool_target` | `send_contractor_email`, `request_expert_validation` | `NonConformityCases` + SES |
+| `ncr` | `search_ncr_history` | Bedrock KB `GXY5L19KJX` |
+| `case` | `create_case`, `get_case`, `list_cases`, `record_validation` | `NonConformityCases` |
+| `mail` | `send_contractor_email`, `request_expert_validation` | `NonConformityCases` + SES |
 
 `lambdas/tools/context.py` is **gone** — its job is done by JWT claims + Cedar.
 
@@ -362,7 +362,7 @@ Bisection proved it, and only this one variable mattered:
 |---|---|
 | `search_ncr_history` | OK |
 | `gateway_ncr_tool_target___search_ncr_history` | OK |
-| `ncr_tool_target___search_ncr_history` | OK |
+| `ncr_tool_target___search_ncr_history` | OK (but not deployable — CDK forbids `_`) |
 | `ncr-tool-target___search_ncr_history` | **FAIL** |
 | `gateway_ncr-tool-target___search_ncr_history` | **FAIL** |
 
@@ -373,8 +373,20 @@ the same tool with a hyphen-free name passes 3/3 on the exact prompt that fails
 
 Consequences for this fork:
 
-* **Gateway target names are underscore-only** (`ncr_tool_target`,
-  `case_tool_target`, `mail_tool_target`). They used to be hyphenated.
+* **Gateway target names are a single alphanumeric word** (`ncr`, `case`,
+  `mail`). They were `ncr-tool-target` etc. (hyphens — breaks Nova) before that.
+  Neither form of separator works: hyphens break Nova, and CDK refuses
+  underscores with
+
+  ```
+  «GatewayTargetNameInvalid» Gateway target name must contain only alphanumeric
+  characters and hyphens, with hyphens only between characters
+  ```
+
+  so the name has to contain no separator at all. Resulting tool names are
+  `ncr___search_ncr_history`, `case___create_case`, and so on — and the runtime's
+  `MCPClient(prefix="gateway")` makes them `gateway_ncr___search_ncr_history`,
+  which is alphanumeric-plus-underscore and passes.
 * Keep tool names in `tool_spec.json` underscore-only as well.
 * If a target is ever renamed, `gateway/policies/policy.cedar` must be edited in
   lockstep — Cedar actions are `<targetName>___<toolName>` and Cedar is

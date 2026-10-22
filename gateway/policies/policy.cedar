@@ -13,11 +13,12 @@
 // even see `record_validation`.
 //
 // ACTION NAME FORMAT: "<gateway target name>___<tool name>" (triple underscore).
-//   targets: ncr_tool_target, case_tool_target, mail_tool_target
+//   targets: ncr, case, mail
 //   see the matching tool_spec.json for tool names.
-// Target names are hyphen-free on purpose: the Gateway exposes each tool to the
-// model as "<target>___<tool>", and a hyphen anywhere in that name breaks Nova
-// Pro's Converse with "invalid sequence as part of ToolUse".
+// Target names are a single alphanumeric word on purpose. CDK rejects anything
+// but alphanumeric-plus-hyphens, and a hyphen anywhere in the tool name the model
+// sees ("<target>___<tool>") breaks Nova Pro's Converse with "invalid sequence as
+// part of ToolUse". So: no hyphens, no underscores.
 //
 // {{GATEWAY_ARN}} is replaced by CDK at deploy time with the real Gateway ARN.
 //
@@ -30,12 +31,12 @@
 permit(
   principal is AgentCore::OAuthUser,
   action in [
-    AgentCore::Action::"ncr_tool_target___search_ncr_history",
-    AgentCore::Action::"case_tool_target___create_case",
-    AgentCore::Action::"case_tool_target___get_case",
-    AgentCore::Action::"case_tool_target___list_cases",
-    AgentCore::Action::"mail_tool_target___send_contractor_email",
-    AgentCore::Action::"mail_tool_target___request_expert_validation"
+    AgentCore::Action::"ncr___search_ncr_history",
+    AgentCore::Action::"case___create_case",
+    AgentCore::Action::"case___get_case",
+    AgentCore::Action::"case___list_cases",
+    AgentCore::Action::"mail___send_contractor_email",
+    AgentCore::Action::"mail___request_expert_validation"
   ],
   resource == AgentCore::Gateway::"{{GATEWAY_ARN}}"
 )
@@ -53,7 +54,7 @@ when {
 
 permit(
   principal is AgentCore::OAuthUser,
-  action == AgentCore::Action::"case_tool_target___record_validation",
+  action == AgentCore::Action::"case___record_validation",
   resource == AgentCore::Gateway::"{{GATEWAY_ARN}}"
 )
 when {
