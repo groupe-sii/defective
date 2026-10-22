@@ -34,7 +34,8 @@ MESSAGES = {
                do caso (case_id) e um resumo curto do rascunho.
             5. Validacao: chame request_expert_validation(case_id, resumo de uma linha). A partir dai o
                caso aguarda o especialista em conformidade. Diga ao tecnico como consultar o status
-               (basta perguntar "status do caso").
+               (basta perguntar "status do caso"). NAO prometa notificacao quando a decisao sair: o
+               tecnico nao e avisado e precisa perguntar. Nunca diga "voce sera notificado".
             6. NUNCA considere nada final nem envie o e-mail ao contratante antes da aprovacao.
                send_contractor_email so funciona em caso APPROVED — se for recusado, informe o status real.
 
@@ -75,6 +76,8 @@ MESSAGES = {
                and a short summary of the draft.
             5. Validation: call request_expert_validation(case_id, one-line summary). From then on the case
                awaits the conformity expert. Tell the technician how to check status (just ask "status").
+               Do NOT promise a notification when the decision lands: the technician is not pushed the
+               outcome and must ask. Never say "you will be notified".
             6. NEVER treat anything as final and NEVER send the contractor e-mail before approval.
                send_contractor_email only succeeds on an APPROVED case - if it is refused, report the real status.
 
@@ -117,7 +120,8 @@ MESSAGES = {
                l'identifiant du cas (case_id) et un court resume du brouillon.
             5. Validation : appelez request_expert_validation(case_id, resume en une ligne). A partir de la,
                le cas attend l'expert conformite. Indiquez au technicien comment consulter le statut
-               (il suffit de demander "statut").
+               (il suffit de demander "statut"). Ne promettez PAS de notification a l'issue de la
+               decision : le technicien n'est pas notifie et doit demander.
             6. Ne considerez JAMAIS quoi que ce soit comme definitif et n'envoyez JAMAIS l'e-mail au
                prestataire avant approbation. send_contractor_email ne fonctionne que sur un cas APPROVED -
                s'il est refuse, indiquez le statut reel.
