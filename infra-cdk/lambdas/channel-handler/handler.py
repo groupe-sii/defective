@@ -22,6 +22,7 @@ SPDX-License-Identifier: Apache-2.0
 """
 
 import json
+import contextvars
 import logging
 import os
 import re
@@ -56,6 +57,45 @@ logger.info("channel-handler starting: boto3=%s botocore=%s", boto3.__version__,
 # infra-cdk/lib/backend-construct.ts and the reader in
 # patterns/conformity-agent/utils/auth.py.
 _USER_ID_HEADER = "X-Amzn-Bedrock-AgentCore-Runtime-Custom-User-Id"
+
+# The actor for the invocation currently being processed. A contextvar rather
+# than a closure because the before-sign handler below is registered exactly
+# once per container (see the note under _invoke_with_user_id).
+_CURRENT_ACTOR: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "channel_handler_actor", default=""
+)
+
+_SIGN_EVENT = "before-sign.bedrock-agentcore.InvokeAgentRuntime"
+
+
+def _add_user_id_header(request, **_kwargs):
+    """Attach the current caller's identity to the SigV4-signed request."""
+    actor = _CURRENT_ACTOR.get()
+    if actor:
+        request.headers.add_header(_USER_ID_HEADER, actor)
+
+
+# Registered ONCE per container, deliberately never unregistered.
+#
+# boto3 does not expose arbitrary headers on InvokeAgentRuntime, so the identity
+# header has to be injected inside botocore's signing pipeline: it must be
+# present *before* SigV4 runs, otherwise the service computes a different
+# signature. ``register_first`` is what puts it ahead of the signer.
+#
+# The earlier code registered a fresh handler per call and "unregistered" it in a
+# finally block. ``register_first`` returns None, so
+# ``unregister(event_name, None)`` silently removed nothing: one handler piled up
+# per invocation in a warm container. From the second call on, the header was
+# added twice, the signer and the wire disagreed about the duplicated value, and
+# InvokeAgentRuntime failed with
+#
+#   AccessDeniedException: The request signature we calculated does not match
+#   the signature you provided
+#
+# which is why a cold start appeared to "fix" it. One handler + a contextvar has
+# neither problem; a stale actor cannot leak because _invoke_with_user_id resets
+# the contextvar in its finally block.
+_agentcore.meta.events.register_first(_SIGN_EVENT, _add_user_id_header)
 
 
 # ---------------------------------------------------------------------------
@@ -175,16 +215,15 @@ def _invoke_with_user_id(payload: bytes, session_id: str, actor_id: str) -> dict
       * the allowlisted ``X-Amzn-Bedrock-AgentCore-Runtime-Custom-User-Id``
         header — what the agent reads from ``context.request_headers`` (see
         ``patterns/conformity-agent/utils/auth.py``). boto3 does not expose
-        arbitrary headers on this API, so it is injected with a botocore
-        ``before-sign`` handler, exactly as the AgentCore docs show.
+        arbitrary headers on this API, so it is injected by the module-level
+        ``before-sign`` handler from ``_CURRENT_ACTOR``.
+
+    The handler is registered at import, not here: re-registering it per call
+    leaks handlers (``register_first`` returns None, so it cannot be
+    unregistered) and the duplicate header breaks SigV4. This function only sets
+    and resets the contextvar the handler reads.
     """
-    events = _agentcore.meta.events
-    event_name = "before-sign.bedrock-agentcore.InvokeAgentRuntime"
-
-    def _add_user_id_header(request, **_kwargs):
-        request.headers.add_header(_USER_ID_HEADER, actor_id)
-
-    handler = events.register_first(event_name, _add_user_id_header)
+    token = _CURRENT_ACTOR.set(actor_id)
     try:
         return _agentcore.invoke_agent_runtime(
             agentRuntimeArn=RUNTIME_ARN,
@@ -195,9 +234,7 @@ def _invoke_with_user_id(payload: bytes, session_id: str, actor_id: str) -> dict
             payload=payload,
         )
     finally:
-        # Idempotent and cheap, and it keeps a warm Lambda from accumulating
-        # handlers across invocations.
-        events.unregister(event_name, handler)
+        _CURRENT_ACTOR.reset(token)
 
 
 def _iter_sse_events(raw: str):

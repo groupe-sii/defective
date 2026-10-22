@@ -433,22 +433,44 @@ Two consequences:
   derived from the actor and the UTC day, so reusing the same phone number keeps
   landing on the same warm instance.
 
-### The channel handler pins its own boto3/botocore
+### The channel handler's `before-sign` handler is registered once per container
 
-`InvokeAgentRuntime` is signed with a custom header injected in a `before-sign`
-handler, so the signature depends on SDK internals. Using the AWS-managed
-runtime's bundled botocore produced intermittent
+`InvokeAgentRuntime` takes no arbitrary-header argument, so
+`infra-cdk/lambdas/channel-handler/handler.py` injects
+`X-Amzn-Bedrock-AgentCore-Runtime-Custom-User-Id` from inside botocore's signing
+pipeline — it has to be present *before* SigV4 runs, which is what
+`register_first` buys.
+
+It is registered **once at import** and reads the per-invocation actor from a
+`contextvars.ContextVar`. That is not a style choice. The earlier version
+registered a fresh handler per call and unregistered it in a `finally`:
+
+```python
+handler = events.register_first(event_name, _add_user_id_header)  # returns None
+...
+events.unregister(event_name, handler)                            # removes nothing
+```
+
+`register_first` returns `None`, so the unregister was a no-op. One handler piled
+up per invocation in a warm container; from the **second** message onward the
+header was added twice, the signer and the wire disagreed about the duplicated
+value, and the call failed with
 
 ```
 AccessDeniedException: The request signature we calculated does not match the
 signature you provided
 ```
 
-on some containers, while the identical call from a local process always
-succeeded. The handler is a `PythonFunction` with a pinned boto3/botocore
-(`lambdas/channel-handler/requirements.txt`) so the deployed SDK is the one that
-was verified. FAST's `feedback` and `cedar-policy` Lambdas already use
-`PythonFunction` for the same class of reason.
+which is why a cold start appeared to "fix" it. This was briefly blamed on the
+AWS-managed runtime's bundled botocore; it was not — it reproduces locally in two
+calls in one process, with either SDK.
+
+The handler still runs on `PythonFunction` with pinned boto3/botocore
+(`lambdas/channel-handler/requirements.txt`), which is harmless and keeps the
+deployed SDK identifiable from the import banner.
+
+Rule of thumb: **never register a botocore event handler per request.** Register
+once, pass per-request state through a `ContextVar`.
 
 ---
 
