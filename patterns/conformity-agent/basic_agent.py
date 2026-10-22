@@ -39,7 +39,7 @@ from strands.models import BedrockModel
 from tools.gateway import create_gateway_mcp_client
 from tools.session import ROLE_EXPERT, ROLE_TECHNICIAN, session_note, set_sender
 from utils.contacts import resolve_role
-from utils.locales import get_prompt
+from utils.locales import get_prompt, get_technician_rule
 from utils.auth import extract_user_id_from_context
 
 logger = logging.getLogger(__name__)
@@ -190,8 +190,19 @@ def _create_session_manager(user_id: str, session_id: str) -> AgentCoreMemorySes
 
 
 def _system_prompt(role: str) -> str:
-    """Base locale prompt + the per-request session line."""
-    return f"{get_prompt(LOCALE)}\n\n{session_note()}"
+    """Base locale prompt + the per-request session line (+ role lock).
+
+    The base prompt documents both the technician and the expert workflow, so a
+    technician who *claims* to be the expert in the message text can be talked
+    into the wrong half of it. Cedar still blocks the call, but the assistant
+    would then describe tools it does not have and tell the sender to run them.
+    The technician rule pins the role to the authenticated identity; expert
+    sessions need no extra rule because the expert section already applies.
+    """
+    parts = [get_prompt(LOCALE), session_note()]
+    if role != ROLE_EXPERT:
+        parts.append(get_technician_rule(LOCALE))
+    return "\n\n".join(part.strip() for part in parts if part.strip())
 
 
 def create_conformity_agent(user_id: str, session_id: str) -> Agent:
