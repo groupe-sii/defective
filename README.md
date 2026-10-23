@@ -1,153 +1,120 @@
-## WhatsApp for Business, Strands-Agents and Amazon Bedrock Demo
+# Conformity Assistant — Multichannel Agent on Amazon Bedrock AgentCore
 
-> [!IMPORTANT]
-> This sample is meant to show integration of Strands agent with WhatsApp and is for inspirations purposes. Make sure to implement your organizations best practices before deploying this solution in production workloads.
+> Built for the **AWS CDS Partner Hackathon** ([devpost](https://aws-cds-partner.devpost.com/)).
+> A fork of [FAST](https://github.com/awslabs/fullstack-solution-template-for-agentcore) carrying one
+> use case: a **multichannel conformity assistant** for an operations team.
 
-This demo shows a **conformity assistant** for an operations team, built with **Strands-Agents** and Amazon Bedrock on top of Meta's WhatsApp for Business.
+A field technician reports an equipment non-conformity (leak, crack, corrosion, wrong reading, damage)
+over **WhatsApp or SMS**. A Strands agent searches past Non-Conformity Reports in an Amazon Bedrock
+Knowledge Base, drafts a handling procedure and opens a case. A **conformity expert** approves or rejects
+it from their own 1:1 chat. Once approved, the technician can ask the agent to e-mail the validated
+procedure to the equipment contractor (mocked by default). Replies return on the channel the message
+arrived on, and the conversation is shared across channels (AgentCore Memory, keyed by person).
 
-A field technician reports an equipment non-conformity (leak, crack, corrosion, wrong reading) on WhatsApp **or SMS**. The agent searches past Non-Conformity Reports in an Amazon Bedrock Knowledge Base, drafts a handling procedure, and registers it as a case awaiting validation. A conformity expert — chatting with the same agent from their own number — reviews the draft and approves or rejects it. Once approved, the technician can ask the agent to email the procedure to the equipment contractor (mocked by default; SES in Phase 3). Email/RCS outbound are dispatched but real sends are a later phase.
+## Architecture (one paragraph)
 
-Below is the overall architecture diagram:
+AWS End User Messaging (WhatsApp/SMS) → SNS (customer-managed KMS key) → **channel-handler Lambda**
+(normalizes the envelope, resolves the sender to a Cognito identity/role, invokes the AgentCore Runtime
+with `X-Amzn-Bedrock-AgentCore-Runtime-User-Id`, dispatches the reply, writes both directions to the
+transcript table) → **Strands agent on AgentCore Runtime** (Nova Pro, AgentCore Memory, Gateway MCP
+client) → **AgentCore Gateway** (JWT authorizer + Cedar policy engine: `record_validation` is
+expert-only) → tool Lambdas (`search_ncr_history` → Bedrock KB, `create_case`/`get_case`/`list_cases`/
+`record_validation`, `send_contractor_email`/`request_expert_validation`). The frontend is FAST's stock
+React chat (Amplify).
 
-![Arquitecture](img/architecture.png)
+## Prerequisites
 
-|Feature             |Description                                        |
-|--------------------|---------------------------------------------------|
-|Channels            |Inbound WhatsApp and SMS; reply dispatched on the same channel. Outbound email/RCS wired, real sends pending|
-|Chat roles          |Technician (report/status) and expert (validation), resolved per sender|
-|Custom Agents       |search_ncr_history (Bedrock KB), create_case, get_case, list_cases, record_validation, request_expert_validation, send_contractor_email|
-|Model Provider      |Amazon Bedrock                                     |
+- AWS account in `eu-west-1`, with Bedrock model access to `eu.amazon.nova-pro-v1:0` and a Bedrock
+  Knowledge Base holding past NCRs (default KB id `GXY5L19KJX`).
+- Node.js 20+, Python 3.11+, `uv` (or `pip`), Docker (only if you deploy locally instead of CodeBuild).
+- A Cognito user pool is created by the stack; no manual setup.
+- Optional: an AWS End User Messaging Social (WhatsApp) integration and/or an SMS origination for real
+  channels. The demo runs fully in mock mode without any of this.
 
+## Deploy (in-cloud via CodeBuild — recommended)
 
-1. The user interacts with the WhatsApp or SMS number.
-2. AWS End User Messaging receives the message and adds it to an SNS Topic.
-3. A Lambda function listening to this topic normalizes the message, resolves the sender's role and handles it.
-4. The Strands agent runs the non-conformity workflow with its tools and replies on the same channel.
+AgentCore Runtime is ARM64-only; building locally on Windows is painful. The script zips git-tracked
+files, builds in CodeBuild, streams logs, and tears down build resources on success:
 
-
-## 1 - Getting started with AWS End User Messaging Social (Mandatory)
-
-1. Have a Meta Business Account. Check if your company already has a [Meta Business Account](https://business.facebook.com/). If you don't have a Meta Business Account, you can create one during the sign-up process.
-
-1. To use a phone number that's already in use with the WhatsApp Messenger application or WhatsApp Business application, you must delete it first.
-
-1. A phone number that can receive either an SMS or a voice One-Time Passcode (OTP). The phone number used for sign-up becomes associated with your WhatsApp account and the phone number is used when you send messages. The phone number can still be used for SMS, MMS, and voice messaging.
-
-1. Them, follow up "Sign up through the console" step by step guide from [AWS End User Messaging Documentation](https://docs.aws.amazon.com/social-messaging/latest/userguide/getting-started-whatsapp.html).
-
-## 2 - AWS Envirnoment Setup
-
-### 2.1 Amazon Bedrock Model Access
-
-Ensure you have access to Bedrock Models. If you are using a cross-region profile, make sure the model is enabled in both regions necessary for the profile to work.
-
-[Here](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access-modify.html) is more information on how to enable model access on Amazon Bedrock.
-
-### 2.2 - Virtual Env Setup
-
-Create a virtual environment and install dependencies.
-
-```
-python3 -m venv .env
-source .env/bin/activate
-pip install -r requirements.txt
+```bash
+python scripts/deploy-with-codebuild.py
 ```
 
-### 2.3 Create Lambdas, upload to S3 and deploy Cloudformation
+It does **not** seed contacts. After it succeeds:
 
-This project supports two languages:
-
-1. Brazilian Portuguese (pt_BR)
-2. US English (en_US)
-3. French (fr_FR)
-
-**By default, `pack_and_deploy.sh` will deploy English locale, but you can change on `template.yaml` file. Change the parameter `LocaleConfig` for the desired locale at the beginning of the CloudFormation Template file, to change solution language!**
-
-**Before getting started, it's necessary to have a S3 Bucket available to store assets that will be created by CloudFormation stack. If you don't have a S3 Bucket, please create one following [this](https://docs.aws.amazon.com/AmazonS3/latest/userguide/create-bucket-overview.html) documentation.**
-
-This shell script will pack all Lambda functions and deploy Cloudformation stack.
-
-```
-chmod +x pack_and_deploy.sh pack_lambda.sh
-
-export S3_BUCKET=<S3_BUCKET>
-export S3_KEY=<S3_KEY>
-
-./pack_and_deploy.sh $S3_BUCKET $S3_KEY
-
+```bash
+uv run scripts/seed-contacts.py                 # create a Cognito user per expert + seed contacts table
+uv run scripts/ingest-ncr-text.py               # publish the 92 synthetic NCRs to the KB (idempotent)
+uv run scripts/provision-sms.py --simulator     # EUM simulator origination + demo numbers
+uv run scripts/smoke-channels.py                # which channels are live, and why
 ```
 
-Example:
+Direct deploy also works if you have Docker locally: `cd infra-cdk && cdk deploy`.
 
-```
-./pack_and_deploy.sh my-s3-bucket my-folder-assets
-```
+Validate the CDK without Docker: `cd infra-cdk && npx tsc --noEmit`.
 
-**By default, this project is building using Python 3.11, but you can change with an optional parameter PYTHON_VERSION, by calling bash with following args:**
+## Post-deploy: make a channel real (optional)
 
-```
-./pack_and_deploy.sh my-s3-bucket my-folder-assets "3.11"
-```
+- **SMS (real handset, French):** `docs/SMS_FR_SETUP.md` — sandbox OTP, sender-ID quirks, verified
+  destinations, production-access request.
+- **WhatsApp:** link a WABA → `PutWhatsAppBusinessAccountEventDestinations` → `conformity-agent-inbound`,
+  then remove `whatsapp` from `conformity.mock_channels`.
+- **Email:** verify an SES identity, set `conformity.mock_email: false`, set `contractor_email_from`.
 
-### 2.4 Cloudformation post-step
+## Demo
 
-After the stack is created with CloudFormation, retrieve the SNS topic from the Outputs.
-
-![Stack](img/cloud-form.png)
-
-This will be used as the entry point for AWS End User Messaging. **Copy** SNS output ARN value.
-
-Go to AWS End User Messaging Console, choose *Social Messaging*, on left menu.
-Choose your WhatsApp for Business account integration and click on "Event Destination" tab.
-Click in "Edit Destination" to add your SNS output from Cloud Formation.
-
-![Stack](img/end-user-msg.png)
-
-### 2.5 Demo
-
-This is a demo showing the original sample (fintech) with English locale — the flow is the same, but the agent is now the conformity assistant:
-
-<img src="img/whatsapp-demo.gif" alt="demo" width="350"/>
-
-### 2.6 Demo without a WhatsApp number (mock mode)
-
-The CloudFormation parameter **`MockChannels`** (default `whatsapp,sms,email,rcs`) lists the channels kept in demo mode: a channel in the list **logs** the reply instead of sending it, so you can demo deployment and the agent's capabilities with **no phone number, WABA, or Event Destination setup**. Channels are independent — remove one from the list and that channel sends for real (once provisioned). **`MockEmail=true`** (default) is a separate flag that logs the contractor e-mail instead of sending it via SES.
-
-Send a message to the deployed agent with the helper script (it publishes a realistic inbound event to the stack's SNS topic and tails CloudWatch Logs for the reply):
-
-```
-uv sync   # once - installs the venv deps incl. botocore[crt] for local AWS calls
-.venv/Scripts/python mock_send.py "Hi, we found oil leaking around the mechanical seal of centrifugal pump P-101. What is the procedure? Contractor email: contractor@acme-demo.com"
+```bash
+uv run scripts/phone-emulator.py                # two-phone UI at http://localhost:8787
+uv run scripts/phone-emulator.py --technician 14254147855 --expert 5511999998888
 ```
 
-The full non-conformity flow, driven entirely from the CLI:
+Click-by-click walkthrough with the real-vs-simulated table: **`docs/DEMO_SCRIPT.md`**.
 
-```
-# 1. Technician reports (any number except the expert's is a technician)
-.venv/Scripts/python mock_send.py "Hi, we found oil leaking around the mechanical seal of centrifugal pump P-101. What is the procedure? Contractor email: contractor@acme-demo.com" --phone 5511987654321
-#    -> agent searches the NCR knowledge base, drafts a procedure, creates a case (NC-...), asks the expert
+End-to-end via CLI (publishes a realistic inbound envelope to the stack's SNS topic and tails the reply):
 
-# 2. Expert reviews and approves from their own chat (ExpertContacts parameter, default 5511999998888)
-.venv/Scripts/python mock_send.py "Please review case NC-YYYYMMDD-xxxxxx. It looks correct." --phone 5511999998888
-
-# 3. Technician checks status, then asks for the contractor e-mail
-.venv/Scripts/python mock_send.py "What is the status of my case?" --phone 5511987654321
-.venv/Scripts/python mock_send.py "Great, send the procedure by email to the contractor." --phone 5511987654321
-#    -> MOCK_EMAIL logged in CloudWatch, case moves to CONTRACTOR_NOTIFIED in the NonConformityCases table
+```bash
+uv run test-scripts/test-channel.py "Cable C-102 has a damaged outer sheath, insulation cracked and copper braid visible. Contractor is CableWorks, contractor@example.com. Draft a procedure." --channel sms --phone 14254147855
+uv run test-scripts/test-channel.py "approve NC-YYYYMMDD-xxxxxx" --channel sms --phone 5511999998888
+uv run test-scripts/test-channel.py "status" --channel sms --phone 14254147855
+uv run test-scripts/test-channel.py "send the email to the contractor" --channel sms --phone 14254147855
 ```
 
-**Multichannel.** Add `--channel sms` to any of the commands above to send it as an SMS instead of a WhatsApp message. History is keyed by phone identity (not channel), so the same number talking over WhatsApp and SMS shares **one** conversation — e.g. report the case on WhatsApp, then follow up by SMS and the agent still remembers the case:
+## What is mocked (and why)
+
+| Flag | Default | Effect |
+|---|---|---|
+| `conformity.mock_channels` | `whatsapp,email,rcs` (sms **live**) | Listed channels log the reply instead of sending. Remove a channel to send for real. |
+| `conformity.mock_email` | `true` | `send_contractor_email` logs instead of SES. |
+| RCS | always stubbed | `_send_rcs` logs "rcs-not-provisioned" (no RCS agent registered). |
+| Expert push notification | mocked | `request_expert_validation` logs the ping; mirrored into the transcript table so the phone emulator lights up. |
+
+The demo runs fully in mock mode with **no phone number, WABA, or SES setup**. Only SMS outbound is live, and only to verified simulator destinations.
+
+## Project layout
 
 ```
-.venv/Scripts/python mock_send.py "Quick question: which case did I just open, and what is its status?" --phone 5511987654321 --channel sms
+infra-cdk/                       # all infrastructure (TypeScript CDK), driven by config.yaml
+  config.yaml                    # single source of truth for conformity settings
+  lambdas/channel-handler/       # SNS -> normalize -> resolve user -> InvokeAgentRuntime -> dispatch
+  lambdas/pretoken-v3/           # injects role claim from the contacts table
+gateway/tools/{ncr,case,mail}_tool/   # one Lambda per tool group + tool_spec.json
+gateway/interceptor/             # copies JWT user_id/role into tool args
+gateway/policies/policy.cedar   # record_validation is expert-only
+patterns/conformity-agent/       # the agent (basic_agent.py, locales, tools/session.py)
+scripts/                        # deploy, seed-contacts, provision-sms, smoke-channels, ingest-ncr-text, phone-emulator
+test-scripts/                   # test-channel.py (AgentCore port of mock_send)
+demo/phone-emulator.html        # two-phone (or three with --rcs) demo UI
+poc-legacy/                     # the pre-AgentCore POC, reference only
 ```
 
-Useful flags: `--phone` (pick the sender — this also picks the role), `--channel whatsapp|sms`, `--text "..."`, `--print-event` (print the event JSON offline, no credentials needed), `--tail-only` (just follow the logs). Replies appear as `MOCK_<CHANNEL>: reply to <identity>: ...` in the `/aws/lambda/WhatsApp-Aws-Integration-Main` log group.
+## Key docs
 
-When you connect a real WhatsApp or SMS number, drop that channel from `MockChannels` and redeploy (see `AGENTS.md` for the update-stack command); for WhatsApp that's also when the §2.4 Event Destination step matters. RCS is stubbed for a later phase. The knowledge base `GXY5L19KJX` currently contains image-only content, so the agent's comparisons lean on the standard-practice caveat until real text NCRs are ingested.
+- `docs/CONFORMITY_FORK.md` — every deviation from upstream FAST.
+- `docs/DEMO_SCRIPT.md` — click-by-click video walkthrough + real-vs-simulated table.
+- `docs/SMS_FR_SETUP.md` — self-service real-handset path (OTP, sender-ID filtering, error table).
+- `docs/PHASE_D_CHANNELS.md` — verified channel state.
+- `AGENTS.md` — conventions that differ from defaults (Cedar wiring, identity propagation, warm containers, etc.).
 
-## 3. Delete Resources
+## License
 
-```
-./destroy.sh
-```
+Apache-2.0 (inherited from FAST). First-party additions by this fork.
