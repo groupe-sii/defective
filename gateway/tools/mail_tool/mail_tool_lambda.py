@@ -27,12 +27,19 @@ CASES_TABLE = os.environ["CASES_TABLE"]
 _REGION = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "eu-west-1"))
 SENDER_IDENTITY = os.environ.get("CONTRACTOR_EMAIL_FROM", "noreply@example.com")
 EXPERT_CONTACTS = os.environ.get("EXPERT_CONTACTS", "")
+TRANSCRIPT_TABLE = os.environ.get("TRANSCRIPT_TABLE", "")
 
 _dynamodb = boto3.resource("dynamodb", region_name=_REGION)
 
 STATUS_PENDING = "PENDING_VALIDATION"
 STATUS_APPROVED = "APPROVED"
 STATUS_NOTIFIED = "CONTRACTOR_NOTIFIED"
+
+
+def _transcript_table():
+    if not TRANSCRIPT_TABLE:
+        return None
+    return _dynamodb.Table(TRANSCRIPT_TABLE)
 
 
 def _table():
@@ -118,6 +125,31 @@ def request_expert_validation(case_id: str, summary: str = "") -> str:
     # The push to the expert is mocked (same policy as the POC): the real
     # outbound notification arrives when the channel is provisioned.
     logger.info("NOTIFY_EXPERT (mock): contacts=%s :: %s", EXPERT_CONTACTS, ping)
+
+    # Mirror the (mocked) push into the transcript table so the expert's phone
+    # in the demo emulator lights up with it. In production the real push is
+    # delivered by the channel and this write is unnecessary.
+    ttable = _transcript_table()
+    if ttable is not None:
+        from datetime import datetime, timezone
+        ts = datetime.now(timezone.utc).isoformat()
+        for raw in (EXPERT_CONTACTS or "").split(","):
+            expert_id = raw.strip()
+            if not expert_id:
+                continue
+            try:
+                ttable.put_item(Item={
+                    "identity": expert_id,
+                    "ts": f"{ts}#assistant",
+                    "role": "assistant",
+                    "channel": "sms",
+                    "text": ping,
+                    "created_at": ts,
+                    "expires_at": int((datetime.now(timezone.utc) +
+                                       timedelta(days=7)).timestamp()),
+                })
+            except Exception as err:  # noqa: BLE001 - notification must not fail the tool
+                logger.warning("transcript mirror failed for %s: %s", expert_id, err)
 
     return json.dumps({
         "case_id": case_id,

@@ -811,6 +811,7 @@ export class BackendConstruct extends Construct {
         MOCK_EMAIL: config.conformity!.mock_email ? "true" : "false",
         CONTRACTOR_EMAIL_FROM: config.conformity!.contractor_email_from,
         EXPERT_CONTACTS: config.conformity!.expert_contacts.join(","),
+        TRANSCRIPT_TABLE: this.transcriptTable.tableName,
       },
       logGroup: toolLogGroup("MailToolLambdaLogGroup", "mail-tool"),
     })
@@ -830,6 +831,7 @@ export class BackendConstruct extends Construct {
 
     // Table + KB data access for the tool Lambdas.
     this.casesTable.grantReadWriteData(caseToolLambda)
+    this.transcriptTable.grantReadWriteData(mailToolLambda)
     this.casesTable.grantReadWriteData(mailToolLambda)
     this.contactsTable.grantReadData(caseToolLambda)
     ncrToolLambda.addToRolePolicy(

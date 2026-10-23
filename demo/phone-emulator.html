@@ -188,6 +188,10 @@ async function pollOne(phoneId, attempt) {
   thread.innerHTML = '';
   if (!items.length) {
     thread.append(el('div', 'empty', 'No messages yet.\nSend one below.'));
+    // The expert's phone only gets traffic when the technician's flow notifies
+    // it (a mocked push mirrored into the transcript). Keep polling for a
+    // while so that notification shows up without a manual refresh.
+    if (attempt < 40) setTimeout(() => pollOne(phoneId, attempt + 1), 1500);
     return;
   }
   for (const item of items) thread.append(bubble(item));
