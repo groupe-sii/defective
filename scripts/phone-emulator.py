@@ -53,7 +53,8 @@ STATE = {
 }
 
 
-def load_state() -> None:
+def load_state(technician: str | None = None, expert: str | None = None,
+               rcs_identity: str | None = None, show_rcs: bool = False) -> None:
     stack = get_stack_config()
     STATE["region"] = stack["region"]
     STATE["topic_arn"] = stack["outputs"]["ChannelTopicArn"]
@@ -73,8 +74,6 @@ def load_state() -> None:
     }
 
     def describe(role: str, identity: str, note: str) -> dict:
-        # A +33 identity is a real handset reached through the CONFORMITE sender
-        # ID; +1 425… numbers are EUM simulator destinations.
         real = identity.startswith("33")
         return {
             "id": identity,
@@ -83,12 +82,17 @@ def load_state() -> None:
             "note": "real handset · EUM" if real else note,
         }
 
-    STATE["phones"] = [
-        describe("Technician", identities.get("technician", "14254147755"),
-                 "simulator · success"),
-        describe("Expert", identities.get("expert", "14254147167"),
-                 "simulator · failure"),
+    tech_id = technician or identities.get("technician", "14254147755")
+    exp_id = expert or identities.get("expert", "14254147167")
+
+    phones = [
+        describe("Technician", tech_id, "simulator · success"),
+        describe("Expert", exp_id, "simulator · failure"),
     ]
+    if show_rcs:
+        rcs_id = rcs_identity or "14254147799"
+        phones.append(describe("RCS (stub)", rcs_id, "stub · not provisioned"))
+    STATE["phones"] = phones
     STATE["sms_mocked"] = "sms" in mocked
     STATE["origination_number"] = "12065552684"
 
@@ -201,9 +205,19 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> None:
     parser = argparse.ArgumentParser(description="Local phone emulator for the demo")
     parser.add_argument("--port", type=int, default=8787)
+    parser.add_argument("--technician", metavar="IDENTITY",
+                        help="technician identity (digits only), overrides config.yaml")
+    parser.add_argument("--expert", metavar="IDENTITY",
+                        help="expert identity (digits only), overrides config.yaml")
+    parser.add_argument("--rcs", action="store_true",
+                        help="add a third phone labelled 'RCS (stub)' — RCS is not "
+                             "provisioned, so the conversation is logged only")
+    parser.add_argument("--rcs-identity", metavar="IDENTITY", default="14254147799",
+                        help="identity used by the stubbed RCS phone (default: 14254147799)")
     args = parser.parse_args()
 
-    load_state()
+    load_state(technician=args.technician, expert=args.expert,
+               rcs_identity=args.rcs_identity, show_rcs=args.rcs)
     print_section("phone emulator")
     for phone in STATE["phones"]:
         print_msg(f"  {phone['label']:<11} {phone['number']}  (identity {phone['id']})", "info")
