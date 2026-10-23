@@ -50,13 +50,18 @@ def _load_case(case_id: str):
     return _table().get_item(Key={"case_id": case_id}).get("Item")
 
 
-def send_contractor_email(case_id: str, subject: str, body: str,
+def send_contractor_email(case_id: str, subject: str = "", body: str = "",
                            contractor_email: str = "") -> str:
     """Send the validated procedure e-mail to the equipment contractor.
 
     ``contractor_email`` is optional: it lets the technician supply the address
     late (after case creation). It is persisted on the case before sending, so
     follow-up calls and status checks see it.
+
+    ``subject`` and ``body`` are optional too: when omitted they are derived
+    from the case (subject = "Case <id>: <equipment>", body = the stored
+    procedure). This keeps the tool usable even when the agent does not have
+    the procedure text in its current context.
     """
     case = _load_case(case_id)
     if case is None:
@@ -72,6 +77,11 @@ def send_contractor_email(case_id: str, subject: str, body: str,
                                     "ask the technician for it and call again "
                                     "with it as contractor_email"})
     case["contractor_email"] = to_email
+
+    if not subject:
+        subject = f"Case {case_id}: {case.get('equipment', 'non-conformity')}"
+    if not body:
+        body = case.get("procedure") or "(no procedure recorded)"
 
     mocked = os.getenv("MOCK_EMAIL", "true").lower() == "true"
     now = int(time.time())

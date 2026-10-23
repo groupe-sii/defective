@@ -41,6 +41,7 @@ logger.setLevel(logging.INFO)
 
 RUNTIME_ARN = os.environ["RUNTIME_ARN"]
 CONTACTS_TABLE = os.environ.get("CONTACTS_TABLE", "")
+CASES_TABLE = os.environ.get("CASES_TABLE", "")
 _REGION = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "eu-west-1"))
 
 _agentcore = boto3.client("bedrock-agentcore", region_name=_REGION)
@@ -188,32 +189,89 @@ _STATUS_QUERY_RE = re.compile(
     re.IGNORECASE,
 )
 
+_EMAIL_QUERY_RE = re.compile(
+    r"(send\s+(the\s+)?e[- ]?mail|envoyer?\s+(le\s+)?mail|enviar?\s+(o\s+)?e[- ]?mail"
+    r"|e[- ]?mail\s+(to\s+the\s+)?contractor|mail\s+au\s+prestataire)",
+    re.IGNORECASE,
+)
 
-def _augmented_prompt(text: str) -> str:
-    """Append a per-turn directive to status-like questions.
 
-    Memory replays the whole session, so a later "status?" in a warm session is
-    answered by imitating the model's own earlier wording ("still
-    PENDING_VALIDATION") instead of calling ``list_cases`` - observed live
-    after the expert had approved the case. A directive attached to the
-    CURRENT user message outranks the replayed history; the system prompt
-    cannot, because it was already there when the drift happened.
+def _live_case_block(identity: str, role: str) -> str:
+    """Fetch the caller's current cases and format as an authoritative block.
 
-    The raw user text is what gets transcribed and deduplicated; only the
-    prompt sent to the runtime is augmented.
+    Used to make status answers deterministic: the model cannot contradict live
+    data that is sitting in its prompt, even in a warm session that would
+    otherwise parrot an earlier "PENDING_VALIDATION" reply.
     """
-    if not _STATUS_QUERY_RE.search(text):
+    if not CASES_TABLE:
+        return ""
+    try:
+        from boto3.dynamodb.conditions import Key
+        table = boto3.resource("dynamodb", region_name=_REGION).Table(CASES_TABLE)
+        if role == "expert":
+            resp = table.query(
+                IndexName="status-index",
+                KeyConditionExpression=Key("status").eq("PENDING_VALIDATION"),
+            )
+            items = resp.get("Items", [])
+            if not items:
+                return ""
+            lines = ["[Live case data (authoritative, do not contradict):]",
+                     "Pending validation queue:"]
+            for c in items[:20]:
+                lines.append("  - %s | %s | %s" % (c.get("case_id"), c.get("equipment"), c.get("status")))
+            return "\n".join(lines)
+        resp = table.query(
+            IndexName="created_by-index",
+            KeyConditionExpression=Key("created_by").eq("phone:%s" % identity.split(":")[-1].strip()),
+        )
+        items = sorted(resp.get("Items", []),
+                       key=lambda i: i.get("created_at", 0), reverse=True)
+        if not items:
+            return "[Live case data (authoritative, do not contradict): no cases for this technician.]"
+        lines = ["[Live case data (authoritative, do not contradict):]"]
+        for c in items[:10]:
+            lines.append("  - %s | %s | %s" % (c.get("case_id"), c.get("equipment"), c.get("status")))
+        return "\n".join(lines)
+    except Exception as err:  # noqa: BLE001
+        logger.warning("live case fetch failed for %s: %s", identity, err)
+        return ""
+
+
+def _augmented_prompt(text: str, identity: str = "", role: str = "") -> str:
+    """Append a per-turn directive + live data to status/email queries.
+
+    Memory replays the whole session, so a later "status?" or "send the email"
+    in a warm session is answered by imitating the model's own earlier wording
+    instead of calling the tool. A directive attached to the CURRENT user
+    message outranks the replayed history; the live data block makes the answer
+    correct even if the model still refuses to call the tool.
+    """
+    is_status = bool(_STATUS_QUERY_RE.search(text))
+    is_email = bool(_EMAIL_QUERY_RE.search(text))
+    if not (is_status or is_email):
         return text
-    return (
-        text.rstrip()
-        + "\n\n[System directive: this question requires live data. Call list_cases"
-        " (and get_case when a case id is mentioned) BEFORE answering - earlier"
-        " replies in this conversation may be stale. Reply with the concrete case"
-        " id and its current status.]"
-    )
+    parts = [text.rstrip()]
+    if is_status:
+        parts.append(
+            "[System directive: this question requires live data. Call list_cases "
+            "(and get_case when a case id is mentioned) BEFORE answering - earlier "
+            "replies in this conversation may be stale. Report the concrete case id "
+            "and its current status. Do not contradict the live case data below.]")
+    if is_email:
+        parts.append(
+            "[System directive: to send the contractor e-mail, call "
+            "send_contractor_email(case_id) - subject and body are OPTIONAL and "
+            "default to the procedure stored on the case. Do NOT ask the user for "
+            "the procedure or the subject; pass only case_id (and contractor_email "
+            "if the user just supplied one). Do not contradict the live case data below.]")
+    live = _live_case_block(identity, role)
+    if live:
+        parts.append(live)
+    return "\n\n".join(parts)
 
 
-def _invoke_runtime(actor_id: str, text: str, channel: str) -> str:
+def _invoke_runtime(actor_id: str, text: str, channel: str, role: str = "") -> str:
     """Call the conformity agent and return its final reply text.
 
     The agent streams events; we concatenate the ``data`` deltas and prefer the
@@ -221,7 +279,7 @@ def _invoke_runtime(actor_id: str, text: str, channel: str) -> str:
     the runtime before streaming.
     """
     payload = json.dumps({
-        "prompt": _augmented_prompt(text),
+        "prompt": _augmented_prompt(text, actor_id, role),
         "runtimeSessionId": _session_id(actor_id),
         "channel": channel,
     }).encode("utf-8")
@@ -470,7 +528,7 @@ def process_record(record: dict):
                           actor_id=actor_id, message_id=message.message_id)
 
         try:
-            reply_text = _invoke_runtime(actor_id, message.text, message.channel)
+            reply_text = _invoke_runtime(actor_id, message.text, message.channel, role=role)
         except RuntimeReplyError as err:
             # The runtime ran but produced no usable answer (e.g. Nova Pro's
             # intermittent invalid-tool-use stream error). Say so plainly rather

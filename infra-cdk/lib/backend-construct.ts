@@ -1497,6 +1497,7 @@ export class BackendConstruct extends Construct {
       environment: {
         RUNTIME_ARN: this.agentRuntime.agentRuntimeArn,
         CONTACTS_TABLE: this.contactsTable.tableName,
+        CASES_TABLE: this.casesTable.tableName,
         MOCK_CHANNELS: config.conformity!.mock_channels,
         CONTRACTOR_EMAIL_FROM: config.conformity!.contractor_email_from,
         SMS_ORIGINATION_IDENTITY: config.conformity!.sms.origination_identity,
@@ -1516,6 +1517,7 @@ export class BackendConstruct extends Construct {
 
     // Resolve inbound phone -> Cognito identity.
     this.contactsTable.grantReadData(channelHandler)
+    this.casesTable.grantReadData(channelHandler)
     // Append both directions of every conversation to the transcript store.
     this.transcriptTable.grantWriteData(channelHandler)
 
