@@ -43,6 +43,7 @@ logger.setLevel(logging.INFO)
 CASES_TABLE = os.environ["CASES_TABLE"]
 CONTACTS_TABLE = os.environ.get("CONTACTS_TABLE", "")
 _REGION = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "eu-west-1"))
+TRANSCRIPT_TABLE = os.environ.get("TRANSCRIPT_TABLE", "")
 _dynamodb = boto3.resource("dynamodb", region_name=_REGION)
 
 STATUS_PENDING = "PENDING_VALIDATION"
@@ -253,6 +254,32 @@ def record_validation(case_id: str, decision: str, comment: str = "") -> str:
         logger.error("record_validation failed: %s", err)
         return _jdump({"error": f"failed to record validation: {err}"})
     logger.info("Case %s %s by expert %s", case_id, decision, caller.get("identity"))
+    # Mirror the decision into the technician's transcript so their phone lights
+    # up in the demo emulator (the real push is a channel delivery, mocked here).
+    created_by = case.get("created_by", "")
+    tech_id = created_by.split(":", 1)[-1].strip() if isinstance(created_by, str) else ""
+    if tech_id and TRANSCRIPT_TABLE:
+        try:
+            from datetime import datetime, timezone, timedelta
+            ts = datetime.now(timezone.utc).isoformat()
+            boto3.resource("dynamodb", region_name=_REGION).Table(TRANSCRIPT_TABLE).put_item(Item={
+                "identity": tech_id,
+                "ts": f"{ts}#assistant",
+                "role": "assistant",
+                "channel": "sms",
+                "text": (
+                    f"Case {case_id} has been {decision} by the conformity expert. "
+                    + ("You can now request the contractor e-mail to be sent."
+                       if decision == STATUS_APPROVED
+                       else "Please review the expert's comment and submit a corrected case.")
+                ),
+                "created_at": ts,
+                "expires_at": int((datetime.now(timezone.utc) +
+                                   timedelta(days=7)).timestamp()),
+            })
+        except Exception as err:  # noqa: BLE001
+            logger.warning("transcript mirror (approval) failed for %s: %s", tech_id, err)
+
     return _jdump({"case_id": case_id, "status": decision,
                    "approver": caller.get("identity"), "comment": comment})
 

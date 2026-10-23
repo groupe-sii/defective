@@ -796,6 +796,7 @@ export class BackendConstruct extends Construct {
       environment: {
         CASES_TABLE: this.casesTable.tableName,
         CONTACTS_TABLE: this.contactsTable.tableName,
+        TRANSCRIPT_TABLE: this.transcriptTable.tableName,
       },
       logGroup: toolLogGroup("CaseToolLambdaLogGroup", "case-tool"),
     })
@@ -834,6 +835,7 @@ export class BackendConstruct extends Construct {
     this.transcriptTable.grantReadWriteData(mailToolLambda)
     this.casesTable.grantReadWriteData(mailToolLambda)
     this.contactsTable.grantReadData(caseToolLambda)
+    this.transcriptTable.grantReadWriteData(caseToolLambda)
     ncrToolLambda.addToRolePolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
