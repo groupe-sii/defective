@@ -35,6 +35,7 @@ from bedrock_agentcore.memory.integrations.strands.session_manager import (
 )
 from bedrock_agentcore.runtime import BedrockAgentCoreApp, RequestContext
 from strands import Agent
+from strands.hooks import BeforeToolCallEvent, HookProvider
 from strands.models import BedrockModel
 from tools.gateway import create_gateway_mcp_client
 from tools.session import ROLE_EXPERT, ROLE_TECHNICIAN, session_note, set_sender
@@ -237,12 +238,35 @@ def create_conformity_agent(user_id: str, session_id: str) -> Agent:
 
     # The system prompt is set per-request (it embeds the session line), so the
     # value here is only a placeholder for the constructor.
+    # Guard against runaway tool loops (e.g. Nova Pro re-issuing the same
+    # search with slightly different queries, or re-calling
+    # request_expert_validation on a replayed session). Six calls is plenty for
+    # the workflow (search, create, request_validation, list, get, send_email).
+    # Strands has no `max_iterations` knob, so enforce it with a hook that
+    # cancels further tool calls once the budget is spent.
+    class _ToolCallLimiter(HookProvider):
+        def __init__(self, limit: int = 6):
+            self.limit = limit
+            self.count = 0
+
+        def register_hooks(self, registry) -> None:
+            registry.add_callback(BeforeToolCallEvent, self._on_before_tool)
+
+        def _on_before_tool(self, event: BeforeToolCallEvent) -> None:
+            self.count += 1
+            if self.count > self.limit:
+                event.cancel_tool = (
+                    "Tool-call budget exhausted for this turn. Stop calling "
+                    "tools and reply with what you have."
+                )
+
     return Agent(
         name="conformity_agent",
         system_prompt=_system_prompt(ROLE_TECHNICIAN),
         tools=[gateway_client],
         model=bedrock_model,
         session_manager=session_manager,
+        hooks=[_ToolCallLimiter()],
         trace_attributes={"user.id": user_id, "session.id": session_id},
     )
 

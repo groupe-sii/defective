@@ -1492,7 +1492,7 @@ export class BackendConstruct extends Construct {
       entry: path.join(__dirname, "..", "lambdas", "channel-handler"),
       index: "handler.py",
       handler: "lambda_handler",
-      timeout: cdk.Duration.minutes(2),
+      timeout: cdk.Duration.minutes(5),
       memorySize: 512,
       environment: {
         RUNTIME_ARN: this.agentRuntime.agentRuntimeArn,

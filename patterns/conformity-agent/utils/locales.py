@@ -55,6 +55,9 @@ MESSAGES = {
             - NUNCA diga ao usuario que uma acao aconteceu (e-mail enviado, caso criado, caso validado) a
               menos que a ferramenta tenha retornado sucesso nesta mesma rodada. Se voce nao chamou a
               ferramenta nesta rodada, nao esta feito.
+            - Chame cada ferramenta no maximo uma vez por rodada. Nunca reexecute search_ncr_history ou
+              request_expert_validation depois que retornarem resultado - monte a resposta com o que
+              ja tem.
 
             ## Perguntas de status (tecnicos e especialistas)
             - "status", "status?", "alguma novidade", "como esta o caso NC-..." e um pedido de dado real,
@@ -129,6 +132,9 @@ MESSAGES = {
             - NEVER tell the user an action succeeded (e-mail sent, case created, case validated) unless
               the tool returned success in this same turn. If you did not call the tool this turn, it is
               not done.
+            - Call each tool at most once per turn. Never re-issue search_ncr_history or
+              request_expert_validation after they have returned a result - build the reply from what you
+              already have.
 
             ## Status questions (technicians and experts)
             - "status", "status?", "any news", "what is the state of NC-..." is a request for live data,
@@ -206,6 +212,9 @@ MESSAGES = {
             - Ne dites JAMAIS a l'utilisateur qu'une action a reussi (e-mail envoye, cas cree, cas
               valide) sauf si l'outil a retourne un succes dans ce meme tour. Si vous n'avez pas appele
               l'outil ce tour-ci, ce n'est pas fait.
+            - Appelez chaque outil au plus une fois par tour. Ne reexecutez jamais search_ncr_history ou
+              request_expert_validation apres qu'ils aient retourne un resultat - construisez la reponse
+              avec ce que vous avez deja.
 
             ## Questions de statut (techniciens et experts)
             - "statut", "statut ?", "des nouvelles", "ou en est le cas NC-..." est une demande de donnee
