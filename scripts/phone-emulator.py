@@ -83,7 +83,7 @@ def load_state(technician: str | None = None, expert: str | None = None,
         }
 
     tech_id = technician or identities.get("technician", "14254147755")
-    exp_id = expert or identities.get("expert", "14254147167")
+    exp_id = expert or identities.get("expert", "5511999998888")
 
     phones = [
         describe("Technician", tech_id, "simulator · success"),

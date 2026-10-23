@@ -131,7 +131,7 @@ def request_expert_validation(case_id: str, summary: str = "") -> str:
     # delivered by the channel and this write is unnecessary.
     ttable = _transcript_table()
     if ttable is not None:
-        from datetime import datetime, timezone
+        from datetime import datetime, timezone, timedelta
         ts = datetime.now(timezone.utc).isoformat()
         for raw in (EXPERT_CONTACTS or "").split(","):
             expert_id = raw.strip()
