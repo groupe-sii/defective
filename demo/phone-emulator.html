@@ -185,22 +185,25 @@ async function pollOne(phoneId, attempt) {
     payload = { messages: [] };
   }
   const items = payload.messages || [];
-  thread.innerHTML = '';
-  if (!items.length) {
-    thread.append(el('div', 'empty', 'No messages yet.\nSend one below.'));
-    // The expert's phone only gets traffic when the technician's flow notifies
-    // it (a mocked push mirrored into the transcript). Keep polling for a
-    // while so that notification shows up without a manual refresh.
-    if (attempt < 40) setTimeout(() => pollOne(phoneId, attempt + 1), 1500);
-    return;
+  const signature = items.map((m) => `${m.role}:${m.ts || m.text}`).join('|');
+  // Only re-render when something actually changed: rebuilding the DOM every
+  // poll made the thread flicker and reset the scroll position.
+  if (thread.dataset.signature !== signature) {
+    thread.innerHTML = '';
+    if (!items.length) {
+      thread.append(el('div', 'empty', 'No messages yet.\nSend one below.'));
+    } else {
+      for (const item of items) thread.append(bubble(item));
+      thread.scrollTop = thread.scrollHeight;
+    }
+    thread.dataset.signature = signature;
   }
-  for (const item of items) thread.append(bubble(item));
-  thread.scrollTop = thread.scrollHeight;
 
-  // The stack answers asynchronously (SNS -> Lambda -> runtime). While the last
-  // message is the user's, keep polling for the reply.
-  const last = items[items.length - 1];
-  if (last && last.role !== 'assistant' && attempt < 40) {
+  // Keep polling while waiting for a reply, or while the thread is still empty
+  // (the expert phone only gets traffic when the technician's flow notifies it).
+  const last = items.length ? items[items.length - 1] : null;
+  const waiting = !last || last.role !== 'assistant';
+  if (waiting && attempt < 40) {
     setTimeout(() => pollOne(phoneId, attempt + 1), 1500);
   }
 }
