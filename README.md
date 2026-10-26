@@ -63,9 +63,13 @@ Validate the CDK without Docker: `cd infra-cdk && npx tsc --noEmit`.
 
 ## Demo
 
+**Video:** [Watch the demo on YouTube](https://youtu.be/REPLACE_WITH_YOUR_VIDEO_ID) *(unlisted)*
+
+Run the two-phone emulator locally:
+
 ```bash
-uv run scripts/phone-emulator.py                # two-phone UI at http://localhost:8787
-uv run scripts/phone-emulator.py --technician 14254147855 --expert 5511999998888
+uv run scripts/phone-emulator.py --technician 14254147855 --expert 5511999998888 --image demo/sample.png
+# open http://localhost:8787
 ```
 
 Click-by-click walkthrough with the real-vs-simulated table: **`docs/DEMO_SCRIPT.md`**.
