@@ -150,7 +150,7 @@ def request_expert_validation(case_id: str, summary: str = "") -> str:
             if not expert_id:
                 continue
             try:
-                ttable.put_item(Item={
+                item = {
                     "identity": expert_id,
                     "ts": f"{ts}#assistant",
                     "role": "assistant",
@@ -159,7 +159,10 @@ def request_expert_validation(case_id: str, summary: str = "") -> str:
                     "created_at": ts,
                     "expires_at": int((datetime.now(timezone.utc) +
                                        timedelta(days=7)).timestamp()),
-                })
+                }
+                if case.get("image_url"):
+                    item["image_url"] = str(case.get("image_url"))
+                ttable.put_item(Item=item)
             except Exception as err:  # noqa: BLE001 - notification must not fail the tool
                 logger.warning("transcript mirror failed for %s: %s", expert_id, err)
 

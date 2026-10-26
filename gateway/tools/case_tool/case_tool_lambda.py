@@ -304,7 +304,7 @@ def record_validation(case_id: str, decision: str, comment: str = "") -> str:
         try:
             from datetime import datetime, timezone, timedelta
             ts = datetime.now(timezone.utc).isoformat()
-            boto3.resource("dynamodb", region_name=_REGION).Table(TRANSCRIPT_TABLE).put_item(Item={
+            item = {
                 "identity": tech_id,
                 "ts": f"{ts}#assistant",
                 "role": "assistant",
@@ -318,7 +318,10 @@ def record_validation(case_id: str, decision: str, comment: str = "") -> str:
                 "created_at": ts,
                 "expires_at": int((datetime.now(timezone.utc) +
                                    timedelta(days=7)).timestamp()),
-            })
+            }
+            if case.get("image_url"):
+                item["image_url"] = str(case.get("image_url"))
+            boto3.resource("dynamodb", region_name=_REGION).Table(TRANSCRIPT_TABLE).put_item(Item=item)
         except Exception as err:  # noqa: BLE001
             logger.warning("transcript mirror (approval) failed for %s: %s", tech_id, err)
 
