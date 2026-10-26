@@ -39,7 +39,8 @@ def _table():
 
 
 def record(identity: str, role: str, text: str, channel: str,
-           actor_id: str = "", message_id: str = "", dispatch=None) -> None:
+           actor_id: str = "", message_id: str = "", dispatch=None,
+           image_url: str = "") -> None:
     """Append one message to the transcript (best-effort, never raises)."""
     table = _table()
     if table is None:
@@ -62,6 +63,8 @@ def record(identity: str, role: str, text: str, channel: str,
             item["message_id"] = message_id
         if dispatch is not None:
             item["dispatch"] = str(dispatch)[:1000]
+        if image_url:
+            item["image_url"] = str(image_url)[:2000]
         table.put_item(Item=item)
     except Exception:
         logger.exception("Transcript write failed for %s", identity)

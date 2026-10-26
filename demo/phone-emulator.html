@@ -134,20 +134,30 @@ function renderShell() {
     const input = el('input');
     input.placeholder = 'Message';
     input.autocomplete = 'off';
+    const attach = el('button', null, '📎');
+    attach.type = 'button';
+    attach.title = 'Attach an image URL';
     const button = el('button', null, 'Send');
-    compose.append(input, button);
+    let pendingImage = '';
+    attach.addEventListener('click', () => {
+      const url = prompt('Image URL to attach (presigned S3 URL or public URL):');
+      if (url) { pendingImage = url.trim(); attach.classList.add('attached'); }
+    });
+    compose.append(input, attach, button);
     compose.addEventListener('submit', async (event) => {
       event.preventDefault();
       const text = input.value.trim();
-      if (!text) return;
+      if (!text && !pendingImage) return;
       input.value = '';
       button.disabled = true;
       try {
         await api('/api/send', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ phone: phone.id, text }),
+          body: JSON.stringify({ phone: phone.id, text: text || '(image)', imageUrl: pendingImage }),
         });
+        pendingImage = '';
+        attach.classList.remove('attached');
         setTimeout(() => pollOne(phone.id, 0), 800);
       } catch (err) {
         alert(`Could not send: ${err.message}`);
@@ -163,9 +173,35 @@ function renderShell() {
   }
 }
 
-function bubble(item) {
+function isSmsOnly(phoneId) {
+  const p = (state.config.phones || []).find((x) => x.id === phoneId);
+  const label = (p && p.label) || '';
+  return /expert|rcs|stub/i.test(label);
+}
+
+function bubble(item, phoneId) {
   const wrap = el('div', `bubble ${item.role === 'assistant' ? 'out' : 'in'}`);
-  wrap.append(document.createTextNode(item.text));
+  if (item.image_url) {
+    if (isSmsOnly(phoneId)) {
+      const a = document.createElement('a');
+      a.href = item.image_url;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      a.textContent = '📎 View attached image';
+      a.style.display = 'block';
+      a.style.marginBottom = '4px';
+      wrap.append(a);
+    } else {
+      const img = document.createElement('img');
+      img.src = item.image_url;
+      img.style.maxWidth = '220px';
+      img.style.borderRadius = '8px';
+      img.style.display = 'block';
+      img.style.marginBottom = '4px';
+      wrap.append(img);
+    }
+  }
+  wrap.append(document.createTextNode(item.text || ''));
   if (item.role === 'assistant') {
     const meta = el('div', 'meta');
     const how = String(item.dispatch || '').includes('mocked') ? 'mocked' : 'sent · EUM simulator';
@@ -193,7 +229,7 @@ async function pollOne(phoneId, attempt) {
     if (!items.length) {
       thread.append(el('div', 'empty', 'No messages yet.\nSend one below.'));
     } else {
-      for (const item of items) thread.append(bubble(item));
+      for (const item of items) thread.append(bubble(item, phoneId));
       thread.scrollTop = thread.scrollHeight;
     }
     thread.dataset.signature = signature;

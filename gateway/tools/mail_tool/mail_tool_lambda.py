@@ -132,6 +132,8 @@ def request_expert_validation(case_id: str, summary: str = "") -> str:
         f"Reply in your chat with: approve {case_id} "
         f"or reject {case_id} <reason>"
     )
+    if case.get("image_url"):
+        ping += f"\nImage: {case.get('image_url')}"
     # The push to the expert is mocked (same policy as the POC): the real
     # outbound notification arrives when the channel is provisioned.
     logger.info("NOTIFY_EXPERT (mock): contacts=%s :: %s", EXPERT_CONTACTS, ping)

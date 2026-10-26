@@ -21,6 +21,7 @@ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: Apache-2.0
 """
 
+import base64
 import json
 import contextvars
 import logging
@@ -42,6 +43,7 @@ logger.setLevel(logging.INFO)
 RUNTIME_ARN = os.environ["RUNTIME_ARN"]
 CONTACTS_TABLE = os.environ.get("CONTACTS_TABLE", "")
 CASES_TABLE = os.environ.get("CASES_TABLE", "")
+TRANSCRIPT_TABLE = os.environ.get("TRANSCRIPT_TABLE", "")
 _REGION = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "eu-west-1"))
 
 _agentcore = boto3.client("bedrock-agentcore", region_name=_REGION)
@@ -140,6 +142,10 @@ def _identity_for(phone_identity: str):
     return f"phone:{phone_identity}", "technician"
 
 
+class RuntimeReplyError(RuntimeError):
+    """The runtime streamed a failure (or nothing) instead of an answer."""
+
+
 def _session_id(actor_id: str) -> str:
     """One conversation per actor per UTC day.
 
@@ -153,7 +159,7 @@ def _session_id(actor_id: str) -> str:
 
     So it may contain only letters, digits, hyphen and underscore, and must not
     start with a separator. That rules out the ``phone:<number>`` synthetic actor
-    id verbatim — the colon is rejected:
+    id verbatim â€” the colon is rejected:
 
         ValidationException: Value at 'sessionId' failed to satisfy constraint:
         Member must satisfy regular expression pattern: [a-zA-Z0-9][a-zA-Z0-9-_]*
@@ -177,12 +183,107 @@ def _session_id(actor_id: str) -> str:
 # Runtime invocation
 # ---------------------------------------------------------------------------
 
-class RuntimeReplyError(RuntimeError):
     """The runtime streamed a failure (or nothing) instead of an answer."""
 
 
-# Status-like questions, in every supported locale. The match must stay loose:
-# it only decides whether the per-turn directive below is appended.
+def _latest_image_url(identity: str, within_minutes: int = 10) -> str:
+    """Return the most recent image URL recorded for this identity, if recent."""
+    if not TRANSCRIPT_TABLE:
+        return ""
+    try:
+        from datetime import datetime, timezone, timedelta
+        table = boto3.resource("dynamodb", region_name=_REGION).Table(TRANSCRIPT_TABLE)
+        resp = table.query(
+            KeyConditionExpression="#i = :i",
+            ExpressionAttributeNames={"#i": "identity"},
+            ExpressionAttributeValues={":i": identity},
+            ScanIndexForward=False,
+            Limit=20,
+        )
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=within_minutes)
+        for item in resp.get("Items", []):
+            url = item.get("image_url")
+            if not url:
+                continue
+            try:
+                ts = datetime.fromisoformat(item.get("ts", "").split("#")[0])
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                if ts >= cutoff:
+                    return str(url)
+            except (ValueError, TypeError):
+                return str(url)
+        return ""
+    except Exception as err:  # noqa: BLE001
+        logger.warning("latest image lookup failed for %s: %s", identity, err)
+        return ""
+
+
+
+def _download_image(url: str, timeout: int = 15):
+    """Download an image and return (base64_str, format) or (None, None)."""
+    if not url:
+        return None, None
+    try:
+        import urllib.request
+        req = urllib.request.Request(url, headers={"User-Agent": "conformity-handler/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = resp.read()
+            ctype = (resp.headers.get("Content-Type") or "image/jpeg").lower()
+        fmt = "jpeg"
+        if "png" in ctype:
+            fmt = "png"
+        elif "webp" in ctype:
+            fmt = "webp"
+        elif "gif" in ctype:
+            fmt = "gif"
+        if not data or len(data) > 4 * 1024 * 1024:
+            logger.warning("image too large or empty: %d bytes", len(data))
+            return None, None
+        return base64.b64encode(data).decode("ascii"), fmt
+    except Exception as err:  # noqa: BLE001
+        logger.warning("image download failed for %s: %s", url, err)
+        return None, None
+    """One conversation per actor per UTC day.
+
+    Mirrors the POC's 'one row per identity + day' behaviour, but as a runtime
+    session id. Must be at least 33 characters for AgentCore.
+
+    The id is also used as an AgentCore *Memory* sessionId, which is validated
+    against:
+
+        [a-zA-Z0-9][a-zA-Z0-9-_]*
+
+    So it may contain only letters, digits, hyphen and underscore, and must not
+    start with a separator. That rules out the ``phone:<number>`` synthetic actor
+    id verbatim - the colon is rejected:
+
+        ValidationException: Value at 'sessionId' failed to satisfy constraint:
+        Member must satisfy regular expression pattern: [a-zA-Z0-9][a-zA-Z0-9-_]*
+
+    Any disallowed character is therefore replaced with ``-``, which keeps the id
+    deterministic (the same actor always maps to the same session) while staying
+    valid. Hashing is deliberately avoided: a readable id is worth more when
+    debugging Memory.
+    """
+    day = datetime.now(timezone.utc).strftime("%Y%m%d")
+    safe = re.sub(r"[^a-zA-Z0-9_-]", "-", str(actor_id))
+    # Guard the first character: the pattern forbids leading separators.
+    if not safe or not safe[0].isalnum():
+        safe = "a" + safe
+    base = "%s-%s" % (safe, day)
+    # The 33-char pad is what satisfies AgentCore's minimum session-id length.
+    return (base + "-" + "0" * 33)[:128]
+
+
+# ---------------------------------------------------------------------------
+# Runtime invocation
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Entrypoint
+# ---------------------------------------------------------------------------
+
 _STATUS_QUERY_RE = re.compile(
     r"(\bstatus\b|\bstatut\b|\bestado do caso\b|\bstate of\b|\bany news\b"
     r"|\bdes nouvelles\b|\balguma novidade\b|\bou en est\b)",
@@ -194,8 +295,6 @@ _EMAIL_QUERY_RE = re.compile(
     r"|e[- ]?mail\s+(to\s+the\s+)?contractor|mail\s+au\s+prestataire)",
     re.IGNORECASE,
 )
-
-
 def _live_case_block(identity: str, role: str) -> str:
     """Fetch the caller's current cases and format as an authoritative block.
 
@@ -270,8 +369,9 @@ def _augmented_prompt(text: str, identity: str = "", role: str = "") -> str:
         parts.append(live)
     return "\n\n".join(parts)
 
-
-def _invoke_runtime(actor_id: str, text: str, channel: str, role: str = "") -> str:
+def _invoke_runtime(actor_id: str, text: str, channel: str, role: str = "",
+                    image_url: str = "", image_b64: str = None,
+                    image_format: str = "jpeg") -> str:
     """Call the conformity agent and return its final reply text.
 
     The agent streams events; we concatenate the ``data`` deltas and prefer the
@@ -280,6 +380,9 @@ def _invoke_runtime(actor_id: str, text: str, channel: str, role: str = "") -> s
     """
     payload = json.dumps({
         "prompt": _augmented_prompt(text, actor_id, role),
+        "image_url": image_url,
+        "image_b64": image_b64 or "",
+        "image_format": image_format,
         "runtimeSessionId": _session_id(actor_id),
         "channel": channel,
     }).encode("utf-8")
@@ -303,10 +406,10 @@ def _invoke_with_user_id(payload: bytes, session_id: str, actor_id: str) -> dict
 
     Two distinct channels carry the identity, and both are needed:
 
-      * ``runtimeUserId=actor_id`` — a first-class API parameter. AgentCore uses
+      * ``runtimeUserId=actor_id`` â€” a first-class API parameter. AgentCore uses
         it to scope Memory, so conversation history is per person.
       * the allowlisted ``X-Amzn-Bedrock-AgentCore-Runtime-Custom-User-Id``
-        header — what the agent reads from ``context.request_headers`` (see
+        header â€” what the agent reads from ``context.request_headers`` (see
         ``patterns/conformity-agent/utils/auth.py``). boto3 does not expose
         arbitrary headers on this API, so it is injected by the module-level
         ``before-sign`` handler from ``_CURRENT_ACTOR``.
@@ -334,7 +437,7 @@ def _iter_sse_events(raw: str):
     """Yield the JSON payloads of a Strands AgentCore event stream.
 
     The runtime answers with Server-Sent Events, so each payload line is
-    ``data: {json}`` — not a bare ``{json}`` line.
+    ``data: {json}`` â€” not a bare ``{json}`` line.
 
     The format below is what this deployment actually emits (captured from
     InvokeAgentRuntime against the live runtime):
@@ -352,7 +455,7 @@ def _iter_sse_events(raw: str):
     Two details matter and are easy to get wrong (both were observed breaking
     the reply):
 
-      * ``data`` deltas are per-token and *drop leading whitespace* — a delta
+      * ``data`` deltas are per-token and *drop leading whitespace* â€” a delta
         whose ``delta.text`` is ``" How"`` arrives as ``data: "How"``.
         Concatenating ``data`` therefore yields ``Hello!HowcanI...``. Use
         ``delta.text``, or prefer ``result``.
@@ -413,7 +516,7 @@ def _strip_thinking(text: str) -> str:
         I need more information about the pump.
 
     That reasoning is for the operator, not the technician on WhatsApp, so it is
-    dropped here — everything outside the tags is kept. An unterminated block
+    dropped here â€” everything outside the tags is kept. An unterminated block
     (the streaming tail can cut one off) is dropped to the end of the string.
     """
     without_blocks = re.sub(r"<thinking>.*?</thinking>", "", text, flags=re.DOTALL)
@@ -427,15 +530,15 @@ def _extract_reply(raw: str) -> str:
 
     Preference order, most reliable first:
 
-      1. ``{"result": "<full answer>"}`` — the terminal event. The runtime sends
+      1. ``{"result": "<full answer>"}`` â€” the terminal event. The runtime sends
          a plain **string** here (Fast's frontend parser looks for a
          ``{"stop_reason": ...}`` dict instead, so it misses it), and it is the
          complete, correctly-spaced answer.
-      2. Streamed deltas, using ``delta.text`` — **not** ``data``. Both appear
+      2. Streamed deltas, using ``delta.text`` â€” **not** ``data``. Both appear
          on each delta event, but ``data`` is the token with leading whitespace
          stripped (``" How"`` arrives as ``"How"``), so concatenating ``data``
          loses every word boundary: ``Hello!HowcanI...``.
-      3. A complete ``message`` event — only when it is an **assistant** message.
+      3. A complete ``message`` event â€” only when it is an **assistant** message.
          ``message`` events also carry *user* messages holding tool results, and
          splicing those into the reply would leak internal tool output to the
          technician.
@@ -510,7 +613,7 @@ def process_record(record: dict):
 
     results = []
     for message in inbound:
-        if not message.is_text:
+        if not (message.is_text or message.is_image):
             logger.error("Unsupported message type: %s", message.message_type)
             continue
 
@@ -521,14 +624,26 @@ def process_record(record: dict):
                         message.message_id, message.channel, message.sender)
             continue
 
+        # Image attached to this turn, or carried over from a recent image-only
+        # turn (the agent's memory is text-only, so re-attach the photo).
+        image_url = message.image_url
+        if not image_url and message.is_text:
+            image_url = _latest_image_url(message.identity)
+
+        image_b64, image_fmt = _download_image(image_url) if image_url else (None, None)
+
         actor_id, role = _identity_for(message.identity)
-        logger.info("on %s resolved %s as %s (actor=%s)",
-                    message.channel, message.sender, role, actor_id)
+        logger.info("on %s resolved %s as %s (actor=%s)%s",
+                    message.channel, message.sender, role, actor_id,
+                    " [image]" if image_url else "")
         transcript.record(message.identity, "user", message.text, message.channel,
-                          actor_id=actor_id, message_id=message.message_id)
+                          actor_id=actor_id, message_id=message.message_id,
+                          image_url=image_url)
 
         try:
-            reply_text = _invoke_runtime(actor_id, message.text, message.channel, role=role)
+            reply_text = _invoke_runtime(actor_id, message.text, message.channel, role=role,
+                                         image_url=image_url, image_b64=image_b64,
+                                         image_format=image_fmt)
         except RuntimeReplyError as err:
             # The runtime ran but produced no usable answer (e.g. Nova Pro's
             # intermittent invalid-tool-use stream error). Say so plainly rather

@@ -54,11 +54,14 @@ STATE = {
 
 
 def load_state(technician: str | None = None, expert: str | None = None,
-               rcs_identity: str | None = None, show_rcs: bool = False) -> None:
+               rcs_identity: str | None = None, show_rcs: bool = False,
+               image_path: str | None = None) -> None:
     stack = get_stack_config()
     STATE["region"] = stack["region"]
     STATE["topic_arn"] = stack["outputs"]["ChannelTopicArn"]
     STATE["transcript_table"] = stack["outputs"].get("TranscriptTableName", "")
+    STATE["media_bucket"] = stack["outputs"].get("InboundMediaBucketName", "")
+    STATE["image_url"] = ""
 
     import yaml
 
@@ -95,11 +98,28 @@ def load_state(technician: str | None = None, expert: str | None = None,
     STATE["phones"] = phones
     STATE["sms_mocked"] = "sms" in mocked
     STATE["origination_number"] = "12065552684"
+    STATE["technician_id"] = tech_id
+
+    # Optionally upload a demo image to S3 and use it as the technician's first
+    # attachment (one-shot: cleared after the first send).
+    if image_path:
+        import boto3
+        s3 = boto3.client("s3", region_name=STATE["region"])
+        key = f"demo/{Path(image_path).name}"
+        with open(image_path, "rb") as fh:
+            s3.upload_fileobj(fh, STATE["media_bucket"], key)
+        url = s3.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": STATE["media_bucket"], "Key": key},
+            ExpiresIn=7 * 24 * 3600,
+        )
+        STATE["image_url"] = url
+        print_msg(f"uploaded {image_path} -> {url}", "success")
 
 
-def sms_envelope(phone: str, text: str, destination: str) -> dict:
+def sms_envelope(phone: str, text: str, destination: str, image_url: str = "") -> dict:
     """The inbound SMS shape AWS End User Messaging publishes to SNS."""
-    return {
+    env = {
         "originationNumber": f"+{phone}",
         "destinationNumber": f"+{destination}",
         "messageBody": text,
@@ -107,15 +127,23 @@ def sms_envelope(phone: str, text: str, destination: str) -> dict:
         "messageKeyword": "",
         "previousPublishedMessageId": "",
     }
+    if image_url:
+        env["imageUrl"] = image_url
+    return env
 
 
-def publish(phone: str, text: str) -> dict:
+def publish(phone: str, text: str, image_url: str = "") -> dict:
+    # One-shot: attach the demo image to the technician's first send only.
+    if not image_url and phone == STATE.get("technician_id") and STATE.get("image_url"):
+        image_url = STATE["image_url"]
+        STATE["image_url"] = ""  # consume
     sns = boto3.client("sns", region_name=STATE["region"])
     resp = sns.publish(
         TopicArn=STATE["topic_arn"],
-        Message=json.dumps(sms_envelope(phone, text, STATE["origination_number"])),
+        Message=json.dumps(sms_envelope(phone, text, STATE["origination_number"], image_url)),
     )
-    return {"ok": True, "message_id": resp.get("MessageId")}
+    return {"ok": True, "message_id": resp.get("MessageId"), "image_url": image_url}
+
 
 
 def messages(phone: str, limit: int = 100) -> dict:
@@ -135,6 +163,7 @@ def messages(phone: str, limit: int = 100) -> dict:
             "role": item.get("role", "user"),
             "text": item.get("text", ""),
             "channel": item.get("channel", ""),
+            "image_url": item.get("image_url", ""),
             "created_at": item.get("created_at", ""),
             "dispatch": item.get("dispatch", ""),
         }
@@ -190,11 +219,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         phone = str(payload.get("phone", "")).strip()
         text = str(payload.get("text", "")).strip()
+        image_url = str(payload.get("imageUrl") or payload.get("image_url") or "").strip()
         if not phone or not text:
             self._json({"error": "phone and text are required"}, 400)
             return
         try:
-            self._json(publish(phone, text))
+            self._json(publish(phone, text, image_url))
         except Exception as err:
             self._json({"error": str(err)}, 500)
 

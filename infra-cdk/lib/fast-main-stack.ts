@@ -141,5 +141,11 @@ export class FastMainStack extends cdk.Stack {
       description: "DynamoDB table of conversation transcripts (both directions)",
       exportName: `${props.config.stack_name_base}-TranscriptTableName`,
     })
+
+    new cdk.CfnOutput(this, "InboundMediaBucketName", {
+      value: this.backend.inboundMediaBucket.bucketName,
+      description: "S3 bucket for inbound media (technician photos)",
+      exportName: `${props.config.stack_name_base}-InboundMediaBucketName`,
+    })
   }
 }

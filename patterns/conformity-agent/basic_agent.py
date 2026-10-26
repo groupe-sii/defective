@@ -306,6 +306,49 @@ async def invocations(payload, context: RequestContext):
             role = resolved_role
         set_sender(user_id, role=role, channel=channel)
 
+        # If an image accompanied this turn (or was carried over from a recent
+        # image-only turn), build a multimodal prompt so the VLM can see the
+        # defect. Nova Pro handles images; no model swap needed.
+        # The handler downloads the image and passes base64 (no network needed
+        # in the runtime); fall back to fetching image_url if b64 is absent.
+        prompt = user_query
+        image_b64 = payload.get("image_b64") or ""
+        image_fmt = payload.get("image_format") or "jpeg"
+        image_url = payload.get("image_url") or ""
+        if image_b64:
+            try:
+                import base64
+                img_bytes = base64.b64decode(image_b64)
+                prompt = [
+                    {"text": user_query or "Describe the defect shown in this image and propose a handling procedure."},
+                    {"image": {"format": image_fmt, "source": {"bytes": img_bytes}}},
+                ]
+                logger.info("Loaded image from payload (%d bytes, %s)", len(img_bytes), image_fmt)
+            except Exception as err:
+                logger.warning("Could not decode image payload: %s", err)
+                prompt = (user_query or "") + "\n\n[An image was attached but could not be loaded.]"
+        elif image_url:
+            try:
+                import urllib.request
+                with urllib.request.urlopen(image_url, timeout=15) as resp:
+                    img_bytes = resp.read()
+                    content_type = resp.headers.get("Content-Type", "image/jpeg")
+                fmt = "jpeg"
+                if "png" in content_type:
+                    fmt = "png"
+                elif "webp" in content_type:
+                    fmt = "webp"
+                elif "gif" in content_type:
+                    fmt = "gif"
+                prompt = [
+                    {"text": user_query or "Describe the defect shown in this image and propose a handling procedure."},
+                    {"image": {"format": fmt, "source": {"bytes": img_bytes}}},
+                ]
+                logger.info("Loaded image from %s (%d bytes, %s)", image_url, len(img_bytes), fmt)
+            except Exception as err:
+                logger.warning("Could not load image %s: %s", image_url, err)
+                prompt = (user_query or "") + "\n\n[An image was attached but could not be loaded: %s]" % image_url
+
         agent = create_conformity_agent(user_id, session_id)
         agent.system_prompt = _system_prompt(role)
 
@@ -318,7 +361,7 @@ async def invocations(payload, context: RequestContext):
         in_thinking = False
         pending = ""
 
-        async for event in agent.stream_async(user_query):
+        async for event in agent.stream_async(prompt):
             event = dict(event)
             if isinstance(event.get("data"), str) and event["data"]:
                 pending += event["data"]

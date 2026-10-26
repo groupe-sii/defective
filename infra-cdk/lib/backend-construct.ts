@@ -43,6 +43,7 @@ export class BackendConstruct extends Construct {
   public readonly contactsTable: dynamodb.Table
   public readonly transcriptTable: dynamodb.Table
   public readonly dedupeTable: dynamodb.Table
+  public readonly inboundMediaBucket: s3.Bucket
   public readonly channelTopic: sns.Topic
   private readonly region: string
   private readonly account: string
@@ -88,6 +89,7 @@ export class BackendConstruct extends Construct {
     this.casesTable = this.createCasesTable(props.config)
     this.transcriptTable = this.createTranscriptTable(props.config)
     this.dedupeTable = this.createDedupeTable(props.config)
+    this.inboundMediaBucket = this.createInboundMediaBucket(props.config)
     this.channelTopic = this.createChannelTopic(props.config)
 
     // DEPLOYMENT ORDER EXPLANATION:
@@ -1403,6 +1405,26 @@ export class BackendConstruct extends Construct {
   }
 
   /**
+   * Bucket for inbound media (technician photos of defective equipment).
+   *
+   * The channel handler downloads the provider media URL and re-hosts it here
+   * with a presigned GET URL, so the agent (and the expert) can fetch it
+   * without depending on the provider's expiring media URLs. Objects expire
+   * after 30 days to keep storage bounded.
+   */
+  private createInboundMediaBucket(config: AppConfig): s3.Bucket {
+    const bucket = new s3.Bucket(this, "InboundMediaBucket", {
+      bucketName: `${config.stack_name_base}-inbound-media-${this.account}`,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      lifecycleRules: [{ expiration: cdk.Duration.days(30) }],
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+    })
+    return bucket
+  }
+
+  /**
    * Non-conformity case store.
    *
    * PK case_id; two GSIs mirror the POC's template.yaml exactly so the ported
@@ -1507,6 +1529,7 @@ export class BackendConstruct extends Construct {
         ),
         TRANSCRIPT_TABLE: this.transcriptTable.tableName,
         DEDUPE_TABLE: this.dedupeTable.tableName,
+        INBOUND_MEDIA_BUCKET: this.inboundMediaBucket.bucketName,
       },
       logGroup: new logs.LogGroup(this, "ChannelHandlerLogGroup", {
         logGroupName: `/aws/lambda/${config.stack_name_base}-channel-handler`,
@@ -1520,6 +1543,7 @@ export class BackendConstruct extends Construct {
     this.casesTable.grantReadData(channelHandler)
     // Append both directions of every conversation to the transcript store.
     this.transcriptTable.grantWriteData(channelHandler)
+    this.inboundMediaBucket.grantReadWrite(channelHandler)
 
     // Invoke the runtime on behalf of a user. The ForUser permission is the one
     // that authorizes setting the runtime-user-id header.

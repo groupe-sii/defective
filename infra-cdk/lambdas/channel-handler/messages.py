@@ -32,6 +32,7 @@ class InboundMessage:
     message_id: str = ""
     recipient: str = ""              # your number/WABA the message was sent to
     message_type: str = "text"
+    image_url: str = ""              # optional attached media (presigned S3 URL)
     channel_meta: Dict = field(default_factory=dict)
 
     @property
@@ -42,6 +43,10 @@ class InboundMessage:
     @property
     def is_text(self) -> bool:
         return self.message_type == "text"
+
+    @property
+    def is_image(self) -> bool:
+        return self.message_type == "image"
 
 
 def normalize_identity(raw: str) -> str:
@@ -85,9 +90,13 @@ def _sms_messages(sns_message: Dict) -> List[InboundMessage]:
     inboundMessageId, messageKeyword, previousPublishedMessageId.
     """
     body = sns_message.get("messageBody")
-    if body is None:
+    image_url = (sns_message.get("imageUrl") or sns_message.get("image_url")
+                 or sns_message.get("mediaUrl") or sns_message.get("media_url") or "")
+    if body is None and not image_url:
         logger.error("SMS payload without messageBody: %s", sns_message)
         return []
+    if body is None:
+        body = ""
     return [
         InboundMessage(
             channel=CHANNEL_SMS,
@@ -95,10 +104,12 @@ def _sms_messages(sns_message: Dict) -> List[InboundMessage]:
             text=str(body),
             message_id=str(sns_message.get("inboundMessageId") or ""),
             recipient=normalize_identity(sns_message.get("destinationNumber")),
-            message_type="text",
+            message_type="image" if image_url else "text",
+            image_url=str(image_url),
             channel_meta={
                 "keyword": sns_message.get("messageKeyword"),
-                "destination_number": sns_message.get("destinationNumber"),
+                "media_content_type": sns_message.get("mediaContentType")
+                                     or sns_message.get("media_content_type"),
             },
         )
     ]

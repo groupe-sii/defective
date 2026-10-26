@@ -44,6 +44,7 @@ CASES_TABLE = os.environ["CASES_TABLE"]
 CONTACTS_TABLE = os.environ.get("CONTACTS_TABLE", "")
 _REGION = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "eu-west-1"))
 TRANSCRIPT_TABLE = os.environ.get("TRANSCRIPT_TABLE", "")
+TRANSCRIPT_TABLE = os.environ.get("TRANSCRIPT_TABLE", "")
 _dynamodb = boto3.resource("dynamodb", region_name=_REGION)
 
 STATUS_PENDING = "PENDING_VALIDATION"
@@ -132,11 +133,51 @@ def _visible_to_caller(case: dict, caller: dict) -> bool:
 
 def create_case(equipment: str, description: str, procedure: str,
                 contractor_email: str = "", location: str = "",
-                urgency: str = "", kb_references: str = "") -> str:
+                urgency: str = "", kb_references: str = "",
+                image_url: str = "") -> str:
     """Register a new non-conformity case with a DRAFT procedure."""
     caller = _caller()
     case_id = _new_case_id()
     now = int(time.time())
+
+    # If the agent did not pass a real image_url (it often doesn't, or passes a
+    # placeholder), look it up from the technician's recent transcript: a photo
+    # sent in the last few minutes is almost certainly the one for this case.
+    # This keeps image propagation deterministic instead of depending on model
+    # compliance.
+    placeholder = (not image_url) or "to be provided" in image_url.lower() or "placeholder" in image_url.lower()
+    if placeholder:
+        image_url = ""
+    if placeholder and TRANSCRIPT_TABLE:
+        try:
+            ttable = boto3.resource("dynamodb", region_name=_REGION).Table(TRANSCRIPT_TABLE)
+            tech_id = caller.get("identity", "")
+            if isinstance(tech_id, str) and tech_id.startswith("phone:"):
+                tech_id = tech_id.split(":", 1)[-1]
+            resp = ttable.query(
+                KeyConditionExpression=Key("identity").eq(tech_id),
+                ScanIndexForward=False,
+                Limit=20,
+            )
+            from datetime import datetime, timezone, timedelta
+            cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+            for item in resp.get("Items", []):
+                url = item.get("image_url")
+                if not url:
+                    continue
+                try:
+                    ts = datetime.fromisoformat(item.get("ts", "").split("#")[0])
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                    if ts >= cutoff:
+                        image_url = str(url)
+                        break
+                except (ValueError, TypeError):
+                    image_url = str(url)
+                    break
+        except Exception as err:  # noqa: BLE001
+            logger.warning("image_url lookup failed for %s: %s", caller.get("identity"), err)
+
     item = _clean(
         {
             "case_id": case_id,
@@ -149,6 +190,7 @@ def create_case(equipment: str, description: str, procedure: str,
             "location": location,
             "urgency": urgency,
             "kb_references": kb_references,
+            "image_url": image_url,
             "status": STATUS_PENDING,
             "created_at": now,
             "updated_at": now,

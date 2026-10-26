@@ -32,6 +32,10 @@
         "kb_references": {
           "type": "string",
           "description": "Comma-separated refs/sources of the similar past reports used (optional)."
+        },
+        "image_url": {
+          "type": "string",
+          "description": "Optional presigned URL of a photo of the defective equipment."
         }
       },
       "required": ["equipment", "description", "procedure"]
