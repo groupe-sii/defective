@@ -90,10 +90,11 @@ MESSAGES = {
             - Se o usuario disser "aprovar" ou "rejeitar" sem um case_id, use o case_id da notificacao
               mais recente nesta conversa. Nunca invente ou adivinhe um case_id.
             - Apos aprovar, se o caso tiver um e-mail de contratante (ou o tecnico tiver fornecido um),
-              chame send_contractor_email(case_id) para notificar o contratante - assunto e corpo usam
-              por padrao o procedimento armazenado. O tecnico e entao notificado automaticamente. Diga
-              ao especialista que a validacao foi concluida e que o contratante foi notificado (quando
-              havia um endereco disponivel).
+              chame send_contractor_email(case_id) para notificar o contratante - assunto e corpo sao
+              compostos automaticamente a partir do caso (saudacao formal, descricao do problema, link
+              da foto, procedimento validado, solicitacao de reposicao). O tecnico e entao notificado
+              automaticamente. Diga ao especialista que a validacao foi concluida e que o contratante
+              foi notificado (quando havia um endereco disponivel).
             - Nunca afirme que um caso foi aprovado ou rejeitado a menos que record_validation tenha
               retornado sucesso nesta mesma rodada.
 
@@ -189,8 +190,9 @@ MESSAGES = {
             - If the user says "approve" or "reject" without a case id, use the case id from the most
               recent notification in this conversation. Never invent or guess a case id.
             - After approving, if the case has a contractor e-mail (or the technician provided one),
-              call send_contractor_email(case_id) to notify the contractor - subject and body default to
-              the stored procedure. The technician is then notified automatically. Tell the expert the
+              call send_contractor_email(case_id) to notify the contractor - subject and body are
+              auto-composed from the case (formal greeting, issue description, photo link, validated
+              procedure, request for replacement). The technician is then notified automatically. Tell the expert the
               validation is done and the contractor has been notified (when an address was available).
             - Never claim a case was approved or rejected unless record_validation returned success in
               this same turn.
@@ -294,9 +296,10 @@ MESSAGES = {
               notification la plus recente dans cette conversation. N'inventez jamais de case_id.
             - Apres avoir approuve, si le cas a un e-mail de prestataire (ou si le technicien en a
               fourni un), appelez send_contractor_email(case_id) pour notifier le prestataire - l'objet
-              et le corps utilisent par defaut la procedure stockee. Le technicien est alors notifie
-              automatiquement. Dites a l'expert que la validation est terminee et que le prestataire a
-              ete notifie (lorsqu'une adresse etait disponible).
+              et le corps sont composes automatiquement a partir du cas (salutation formelle, description
+              du probleme, lien de la photo, procedure validee, demande de remplacement). Le technicien
+              est alors notifie automatiquement. Dites a l'expert que la validation est terminee et que
+              le prestataire a ete notifie (lorsqu'une adresse etait disponible).
             - Ne dites jamais qu'un cas a ete approuve ou rejete sauf si record_validation a retourne
               un succes dans ce meme tour.
 

@@ -1,7 +1,7 @@
 [
   {
     "name": "send_contractor_email",
-    "description": "Send the validated procedure e-mail to the equipment contractor/provider. Only allowed once the case status is APPROVED by the conformity expert; the recipient is the contractor e-mail stored on the case, or the optional contractor_email argument when the technician supplies it after case creation. In mock mode (default) the e-mail is logged instead of sent, and the case still moves to CONTRACTOR_NOTIFIED.",
+    "description": "Send the validated procedure e-mail to the equipment contractor/provider. Only allowed once the case status is APPROVED by the conformity expert; the recipient is the contractor e-mail stored on the case, or the optional contractor_email argument when the technician supplies it after case creation. Subject and body are optional and auto-composed from the case (formal greeting, issue description, photo link, validated procedure, request for replacement) when omitted. In mock mode (default) the e-mail is logged instead of sent, and the case still moves to CONTRACTOR_NOTIFIED.",
     "inputSchema": {
       "type": "object",
       "properties": {

@@ -28,6 +28,7 @@ _REGION = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "eu-
 SENDER_IDENTITY = os.environ.get("CONTRACTOR_EMAIL_FROM", "noreply@example.com")
 EXPERT_CONTACTS = os.environ.get("EXPERT_CONTACTS", "")
 TRANSCRIPT_TABLE = os.environ.get("TRANSCRIPT_TABLE", "")
+CONTACTS_TABLE = os.environ.get("CONTACTS_TABLE", "")
 
 _dynamodb = boto3.resource("dynamodb", region_name=_REGION)
 
@@ -79,9 +80,43 @@ def send_contractor_email(case_id: str, subject: str = "", body: str = "",
     case["contractor_email"] = to_email
 
     if not subject:
-        subject = f"Case {case_id}: {case.get('equipment', 'non-conformity')}"
+        subject = f"Non-conformity report {case_id} - {case.get('equipment', 'equipment')}"
     if not body:
-        body = case.get("procedure") or "(no procedure recorded)"
+        # Compose a formal contractor notification from the case data so the
+        # e-mail is complete even when the agent does not supply a body.
+        lines = [
+            "To whom it may concern,",
+            "",
+            "We are writing to inform you of a non-conformity identified on the",
+            "following equipment:",
+            "",
+            f"  Equipment : {case.get('equipment', 'n/a')}",
+        ]
+        if case.get("location"):
+            lines.append(f"  Location  : {case.get('location')}")
+        if case.get("urgency"):
+            lines.append(f"  Urgency   : {case.get('urgency')}")
+        if case.get("description"):
+            lines.append("")
+            lines.append(f"Description of the issue: {case.get('description')}")
+        if case.get("image_url"):
+            lines.append("")
+            lines.append(f"A photo of the defect is available here: {case.get('image_url')}")
+        if case.get("procedure"):
+            lines.append("")
+            lines.append("The conformity expert has validated the following handling procedure:")
+            lines.append("")
+            lines.append(str(case.get("procedure")))
+        lines += [
+            "",
+            "We kindly request that you arrange for a replacement unit to be shipped",
+            "to the site at your earliest convenience, and confirm receipt of this",
+            "notification.",
+            "",
+            "Best regards,",
+            "Conformity Assistant - Operations Team",
+        ]
+        body = "\n".join(lines)
 
     mocked = os.getenv("MOCK_EMAIL", "true").lower() == "true"
     now = int(time.time())
