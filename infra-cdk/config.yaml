@@ -128,7 +128,7 @@ conformity:
     # origination_by_country above) - no other change needed.
     demo_identities:
       technician: "14254147755"  # US "success" simulator destination
-      expert: "14254147167"      # US "failure" simulator destination
+      expert: "5511999998888"    # seeded expert (receives the notification mirror)
 
   # Expert phone numbers (digits only), used to seed the contacts mapping table.
   # These are the numbers allowed to approve/reject a drafted procedure.
