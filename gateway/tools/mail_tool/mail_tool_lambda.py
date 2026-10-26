@@ -168,14 +168,31 @@ def request_expert_validation(case_id: str, summary: str = "") -> str:
     # Mirror the (mocked) push into the transcript table so the expert's phone
     # in the demo emulator lights up with it. In production the real push is
     # delivered by the channel and this write is unnecessary.
+    #
+    # We mirror to EVERY expert seeded in the contacts table, not just the ones
+    # listed in EXPERT_CONTACTS, so a freshly seeded expert receives the
+    # notification without a redeploy. EXPERT_CONTACTS is still used for the
+    # mock log line and the response payload.
     ttable = _transcript_table()
     if ttable is not None:
         from datetime import datetime, timezone, timedelta
         ts = datetime.now(timezone.utc).isoformat()
-        for raw in (EXPERT_CONTACTS or "").split(","):
-            expert_id = raw.strip()
-            if not expert_id:
-                continue
+        expert_ids = set(x.strip() for x in (EXPERT_CONTACTS or "").split(",") if x.strip())
+        # Also pull from the contacts table so newly seeded experts are covered.
+        try:
+            contacts_table = boto3.resource("dynamodb", region_name=_REGION).Table(CONTACTS_TABLE)
+            scan = contacts_table.scan(
+                FilterExpression="#r = :e",
+                ExpressionAttributeNames={"#r": "role"},
+                ExpressionAttributeValues={":e": "expert"},
+            )
+            for item in scan.get("Items", []):
+                pid = item.get("phone_identity")
+                if pid:
+                    expert_ids.add(str(pid))
+        except Exception as err:  # noqa: BLE001
+            logger.warning("contacts scan for experts failed: %s", err)
+        for expert_id in expert_ids:
             try:
                 item = {
                     "identity": expert_id,

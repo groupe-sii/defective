@@ -815,6 +815,7 @@ export class BackendConstruct extends Construct {
         CONTRACTOR_EMAIL_FROM: config.conformity!.contractor_email_from,
         EXPERT_CONTACTS: config.conformity!.expert_contacts.join(","),
         TRANSCRIPT_TABLE: this.transcriptTable.tableName,
+        CONTACTS_TABLE: this.contactsTable.tableName,
       },
       logGroup: toolLogGroup("MailToolLambdaLogGroup", "mail-tool"),
     })
@@ -837,6 +838,7 @@ export class BackendConstruct extends Construct {
     this.transcriptTable.grantReadWriteData(mailToolLambda)
     this.casesTable.grantReadWriteData(mailToolLambda)
     this.contactsTable.grantReadData(caseToolLambda)
+    this.contactsTable.grantReadData(mailToolLambda)
     this.transcriptTable.grantReadWriteData(caseToolLambda)
     ncrToolLambda.addToRolePolicy(
       new iam.PolicyStatement({
