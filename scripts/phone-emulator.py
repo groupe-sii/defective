@@ -106,8 +106,9 @@ def load_state(technician: str | None = None, expert: str | None = None,
         import boto3
         s3 = boto3.client("s3", region_name=STATE["region"])
         key = f"demo/{Path(image_path).name}"
+        content_type = "image/png" if image_path.lower().endswith(".png") else "image/jpeg"
         with open(image_path, "rb") as fh:
-            s3.upload_fileobj(fh, STATE["media_bucket"], key)
+            s3.upload_fileobj(fh, STATE["media_bucket"], key, ExtraArgs={"ContentType": content_type})
         url = s3.generate_presigned_url(
             "get_object",
             Params={"Bucket": STATE["media_bucket"], "Key": key},

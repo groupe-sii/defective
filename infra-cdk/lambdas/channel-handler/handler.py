@@ -229,14 +229,25 @@ def _download_image(url: str, timeout: int = 15):
         req = urllib.request.Request(url, headers={"User-Agent": "conformity-handler/1.0"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = resp.read()
-            ctype = (resp.headers.get("Content-Type") or "image/jpeg").lower()
+            ctype = (resp.headers.get("Content-Type") or "").lower()
         fmt = "jpeg"
-        if "png" in ctype:
+        # Detect from magic bytes first (S3 may return application/octet-stream).
+        if data[:8] == b"\x89PNG\r\n\x1a\n":
+            fmt = "png"
+        elif data[:3] == b"\xff\xd8\xff":
+            fmt = "jpeg"
+        elif data[:6] in (b"GIF87a", b"GIF89a"):
+            fmt = "gif"
+        elif len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            fmt = "webp"
+        elif "png" in ctype:
             fmt = "png"
         elif "webp" in ctype:
             fmt = "webp"
         elif "gif" in ctype:
             fmt = "gif"
+        elif "jpeg" in ctype or "jpg" in ctype:
+            fmt = "jpeg"
         if not data or len(data) > 4 * 1024 * 1024:
             logger.warning("image too large or empty: %d bytes", len(data))
             return None, None
