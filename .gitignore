@@ -66,3 +66,4 @@ public/
 docker/*.tar
 docker/*.tar.gz
 docker/.build/
+docs/.cognito
