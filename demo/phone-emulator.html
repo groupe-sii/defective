@@ -137,6 +137,7 @@ function renderShell() {
     const attach = el('button', null, '📎');
     attach.type = 'button';
     attach.title = 'Attach an image URL';
+    attach.style.minWidth = '36px';
     const button = el('button', null, 'Send');
     let pendingImage = '';
     attach.addEventListener('click', () => {

@@ -239,15 +239,17 @@ def main() -> None:
                         help="technician identity (digits only), overrides config.yaml")
     parser.add_argument("--expert", metavar="IDENTITY",
                         help="expert identity (digits only), overrides config.yaml")
+    parser.add_argument("--image", metavar="PATH",
+                        help="optional image file uploaded to S3 and attached to the technician's first message")
     parser.add_argument("--rcs", action="store_true",
-                        help="add a third phone labelled 'RCS (stub)' — RCS is not "
-                             "provisioned, so the conversation is logged only")
+                        help="add a third phone labelled 'RCS (stub)'")
     parser.add_argument("--rcs-identity", metavar="IDENTITY", default="14254147799",
-                        help="identity used by the stubbed RCS phone (default: 14254147799)")
+                        help="identity used by the stubbed RCS phone")
     args = parser.parse_args()
 
     load_state(technician=args.technician, expert=args.expert,
-               rcs_identity=args.rcs_identity, show_rcs=args.rcs)
+               rcs_identity=args.rcs_identity, show_rcs=args.rcs,
+               image_path=args.image)
     print_section("phone emulator")
     for phone in STATE["phones"]:
         print_msg(f"  {phone['label']:<11} {phone['number']}  (identity {phone['id']})", "info")
