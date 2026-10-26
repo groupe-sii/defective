@@ -19,7 +19,7 @@ Field technicians in industrial plants still report non-conformities on paper or
 
 - **Technician** sends a message describing a defect (e.g. "Cable C-102 has a damaged outer sheath…"). The agent searches a Bedrock Knowledge Base of 92 past NCRs, cites them by id, drafts a numbered procedure, creates a case, and notifies the expert.
 - **Expert** (a different identity, seeded `role=expert`) reviews and replies `approve NC-…` or `reject NC-… <reason>`. Cedar permits `record_validation` only for `role == "expert"`, so a technician cannot even see the tool.
-- **Technician** asks `status` → live case state; then `send the email to the contractor` → e-mail dispatched (mocked by default, SES-ready).
+- **Technician** asks `status` → live case state; the expert's approval automatically e-mails the validated procedure to the equipment contractor (real SES send, sender `conformity.agent@gmail.com`), and the technician is pushed an informative "measures started with contractor" notification. Manual `send the email to the contractor` still works as a fallback.
 - Replies return on the channel the message arrived on; conversation history is shared across channels via AgentCore Memory keyed by person.
 
 ## How we built it

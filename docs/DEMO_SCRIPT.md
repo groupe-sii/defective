@@ -89,25 +89,34 @@ contacted (the e-mail is still the technician's move).
 
 ## Act 3 — the technician closes the loop (45 s)
 
-Back on the left phone:
+Back on the left phone, the approval notification has already arrived:
+
+```
+Case NC-YYYYMMDD-xxxxxx has been APPROVED by the conformity expert. The
+contractor will be notified.
+```
+
+Then, automatically (the expert's approval triggers the e-mail):
+
+```
+Case NC-YYYYMMDD-xxxxxx approved — the validated procedure has been sent to
+the contractor (dr.boris.quintana@gmail.com). Measures are now in progress
+with the contractor.
+```
+
+Optionally confirm with:
 
 ```
 status?
 ```
 
 Expected: the agent calls `list_cases` and answers with the concrete status
-(`APPROVED`), not an explanation of how status works.
+(`CONTRACTOR_NOTIFIED`).
 
-Then:
-
-```
-send the email to the contractor
-```
-
-Expected: `send_contractor_email` succeeds only on the approved case → the
-mock mailer logs the message and the case becomes `CONTRACTOR_NOTIFIED`.
-
-> If Act 1's report omitted the contractor e-mail, this turn first asks for it.
+> The e-mail is real (SES, sender `conformity.agent@gmail.com`) — check the
+> contractor's inbox for the validated procedure. If SES is back in sandbox or
+> the recipient is unverified, the expert's reply says so and the case stays
+> `APPROVED` (manual `send the email to the contractor` still works as a fallback).
 > Send `The contractor is CableWorks, email dr.boris.quintana@gmail.com. Send it.` —
 > the tool takes a late-supplied address (`contractor_email`) and persists it
 > on the case. The reply only claims success after a real tool result.
