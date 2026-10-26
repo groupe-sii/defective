@@ -53,6 +53,15 @@
   @keyframes pop { from { transform: translateY(4px); opacity: .4; } to { transform: none; opacity: 1; } }
   .bubble.in { align-self: flex-start; background: var(--in); border-bottom-left-radius: 5px; }
   .bubble.out { align-self: flex-end; background: var(--out); color: #06112a; border-bottom-right-radius: 5px; }
+  /* WhatsApp-flavoured technician phone */
+  .phone.whatsapp .topbar { background: #075e54; color: #fff; }
+  .phone.whatsapp .topbar .who span { color: rgba(255,255,255,.75); }
+  .phone.whatsapp .topbar .avatar { background: #128c7e; color: #fff; }
+  .phone.whatsapp .bubble.out { background: #dcf8c6; color: #111; }
+  .phone.whatsapp .bubble.out .meta { color: #3a5a3a; }
+  .phone.whatsapp .compose button { background: #25d366; color: #fff; border-color: #25d366; }
+  .phone.whatsapp .compose button:hover { background: #20ba5a; }
+  .phone.whatsapp .screen { background: #e5ddd5; }
   .meta { font-size: 10px; color: var(--muted); margin-top: 4px; letter-spacing: .2px; }
   .bubble.out .meta { color: #123; opacity: .75; }
   .empty { margin: auto; text-align: center; color: var(--muted); font-size: 12.5px; padding: 24px; }
@@ -115,6 +124,7 @@ function renderShell() {
   root.innerHTML = '';
   for (const phone of state.config.phones) {
     const card = el('div', 'phone');
+    if (phone.label === 'Technician') card.classList.add('whatsapp');
     const screen = el('div', 'screen');
 
     const topbar = el('div', 'topbar');
@@ -202,7 +212,13 @@ function bubble(item, phoneId) {
       wrap.append(img);
     }
   }
-  wrap.append(document.createTextNode(item.text || ''));
+  // Hide the raw (very long) presigned URL from the rendered text when a
+  // clickable link/image is already shown above it.
+  let text = item.text || '';
+  if (item.image_url) {
+    text = text.replace(/^Image: https?:\/\/\S+/gm, '').trim();
+  }
+  wrap.append(document.createTextNode(text));
   if (item.role === 'assistant') {
     const meta = el('div', 'meta');
     const how = String(item.dispatch || '').includes('mocked') ? 'mocked' : 'sent · EUM simulator';
