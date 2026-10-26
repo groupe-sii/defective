@@ -90,10 +90,10 @@ conformity:
   mock_channels: whatsapp,email,rcs
 
   # When true, send_contractor_email logs (MOCK_EMAIL ...) instead of using SES.
-  mock_email: true
+  mock_email: false
 
   # Outbound e-mail envelope for the contractor notification.
-  contractor_email_from: noreply@example.com
+  contractor_email_from: conformity.agent@gmail.com
 
   # SMS delivery via AWS End User Messaging (pinpoint-sms-voice-v2).
   # `origination_identity` is a phone-number id/ARN, a pool id, or a *sender ID*.

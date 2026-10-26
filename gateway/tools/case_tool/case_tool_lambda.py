@@ -304,17 +304,22 @@ def record_validation(case_id: str, decision: str, comment: str = "") -> str:
         try:
             from datetime import datetime, timezone, timedelta
             ts = datetime.now(timezone.utc).isoformat()
+            if decision == STATUS_APPROVED:
+                if case.get("contractor_email"):
+                    text = (f"Case {case_id} has been APPROVED by the conformity expert. "
+                            "The contractor will be notified.")
+                else:
+                    text = (f"Case {case_id} has been APPROVED by the conformity expert. "
+                            "Please provide the contractor e-mail to send the procedure.")
+            else:
+                text = (f"Case {case_id} has been REJECTED by the conformity expert: "
+                        f"{comment or 'no comment'}. Please review and submit a corrected case.")
             item = {
                 "identity": tech_id,
                 "ts": f"{ts}#assistant",
                 "role": "assistant",
                 "channel": "sms",
-                "text": (
-                    f"Case {case_id} has been {decision} by the conformity expert. "
-                    + ("You can now request the contractor e-mail to be sent."
-                       if decision == STATUS_APPROVED
-                       else "Please review the expert's comment and submit a corrected case.")
-                ),
+                "text": text,
                 "created_at": ts,
                 "expires_at": int((datetime.now(timezone.utc) +
                                    timedelta(days=7)).timestamp()),

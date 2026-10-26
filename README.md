@@ -73,7 +73,7 @@ Click-by-click walkthrough with the real-vs-simulated table: **`docs/DEMO_SCRIPT
 End-to-end via CLI (publishes a realistic inbound envelope to the stack's SNS topic and tails the reply):
 
 ```bash
-uv run test-scripts/test-channel.py "Cable C-102 has a damaged outer sheath, insulation cracked and copper braid visible. Contractor is CableWorks, contractor@example.com. Draft a procedure." --channel sms --phone 14254147855
+uv run test-scripts/test-channel.py "Cable C-102 has a damaged outer sheath, insulation cracked and copper braid visible. Contractor is CableWorks, dr.boris.quintana@gmail.com. Draft a procedure." --channel sms --phone 14254147855
 uv run test-scripts/test-channel.py "approve NC-YYYYMMDD-xxxxxx" --channel sms --phone 5511999998888
 uv run test-scripts/test-channel.py "status" --channel sms --phone 14254147855
 uv run test-scripts/test-channel.py "send the email to the contractor" --channel sms --phone 14254147855
@@ -84,7 +84,7 @@ uv run test-scripts/test-channel.py "send the email to the contractor" --channel
 | Flag | Default | Effect |
 |---|---|---|
 | `conformity.mock_channels` | `whatsapp,email,rcs` (sms **live**) | Listed channels log the reply instead of sending. Remove a channel to send for real. |
-| `conformity.mock_email` | `true` | `send_contractor_email` logs instead of SES. |
+| `conformity.mock_email` | `false` (live SES) | `send_contractor_email` sends via SES from `contractor_email_from` (verified identity required). |
 | RCS | always stubbed | `_send_rcs` logs "rcs-not-provisioned" (no RCS agent registered). |
 | Expert push notification | mocked | `request_expert_validation` logs the ping; mirrored into the transcript table so the phone emulator lights up. |
 

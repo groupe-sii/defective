@@ -112,6 +112,33 @@ def send_contractor_email(case_id: str, subject: str = "", body: str = "",
     except Exception as err:
         logger.error("Failed to update case %s after e-mail: %s", case_id, err)
 
+    # Mirror the outcome to the technician's transcript so their phone lights up
+    # in the demo emulator. In production the real channel push does this.
+    created_by = case.get("created_by", "")
+    tech_id = created_by.split(":", 1)[-1].strip() if isinstance(created_by, str) else ""
+    ttable = _transcript_table()
+    if tech_id and ttable is not None:
+        try:
+            from datetime import datetime, timezone, timedelta
+            ts = datetime.now(timezone.utc).isoformat()
+            item = {
+                "identity": tech_id,
+                "ts": f"{ts}#assistant",
+                "role": "assistant",
+                "channel": "sms",
+                "text": (f"Case {case_id} approved — the validated procedure has been "
+                         f"sent to the contractor ({to_email}). Measures are now in "
+                         "progress with the contractor."),
+                "created_at": ts,
+                "expires_at": int((datetime.now(timezone.utc) +
+                                   timedelta(days=7)).timestamp()),
+            }
+            if case.get("image_url"):
+                item["image_url"] = str(case.get("image_url"))
+            ttable.put_item(Item=item)
+        except Exception as err:  # noqa: BLE001
+            logger.warning("transcript mirror (email) failed for %s: %s", tech_id, err)
+
     return json.dumps({"case_id": case_id, "sent": True, "mode": mode,
                        "to": to_email, "subject": subject,
                        "status": STATUS_NOTIFIED})

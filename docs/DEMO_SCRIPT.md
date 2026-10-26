@@ -49,7 +49,7 @@ On the left phone (Technician), send:
 
 ```
 Cable C-102 has a damaged outer sheath, insulation cracked and copper braid
-visible. Contractor is CableWorks, contractor@example.com. Draft a procedure.
+visible. Contractor is CableWorks, dr.boris.quintana@gmail.com. Draft a procedure.
 ```
 
 Narrate while it thinks (~10 s):
@@ -108,7 +108,7 @@ Expected: `send_contractor_email` succeeds only on the approved case → the
 mock mailer logs the message and the case becomes `CONTRACTOR_NOTIFIED`.
 
 > If Act 1's report omitted the contractor e-mail, this turn first asks for it.
-> Send `The contractor is CableWorks, email contractor@example.com. Send it.` —
+> Send `The contractor is CableWorks, email dr.boris.quintana@gmail.com. Send it.` —
 > the tool takes a late-supplied address (`contractor_email`) and persists it
 > on the case. The reply only claims success after a real tool result.
 
