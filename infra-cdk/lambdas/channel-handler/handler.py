@@ -1,6 +1,6 @@
 """Inbound channel handler — SNS -> AgentCore Runtime -> channel.
 
-This is the "messaging brick" FAST does not ship. It replaces the POC's
+This is the "messaging brick" the upstream template does not ship. It replaces the POC's
 ``lambdas/lambda_function.py``, which hosted the agent in-process; here the agent
 lives in the AgentCore Runtime and this Lambda is a thin, stateless adapter:
 
@@ -471,7 +471,7 @@ def _iter_sse_events(raw: str):
         Concatenating ``data`` therefore yields ``Hello!HowcanI...``. Use
         ``delta.text``, or prefer ``result``.
       * ``result`` is a plain **string** (not the ``{"stop_reason": ...}`` dict
-        FAST's frontend parser expects) and holds the complete answer.
+        the upstream template's frontend parser expects) and holds the complete answer.
 
     A non-streaming response (plain JSON body) is also tolerated: if no SSE
     framing is present the whole body is parsed as one object.
@@ -571,7 +571,7 @@ def _extract_reply(raw: str) -> str:
         if not isinstance(event, dict):
             continue
 
-        # 1. Terminal result. A string is the whole answer; a dict (as FAST's
+        # 1. Terminal result. A string is the whole answer; a dict (as the upstream template's
         #    frontend parser expects) carries no text and is ignored.
         if isinstance(event.get("result"), str) and event["result"].strip():
             result_text = event["result"]

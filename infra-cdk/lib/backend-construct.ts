@@ -282,7 +282,7 @@ export class BackendConstruct extends Construct {
 
     // Configure inbound auth for the Runtime.
     //
-    // FAST fronts the runtime with a Cognito JWT authorizer because its caller is
+    // The upstream template fronts the runtime with a Cognito JWT authorizer because its caller is
     // a browser. Our primary caller is the channel-handler Lambda (service-to-
     // service), for which AWS recommends IAM SigV4 with the user propagated in a
     // custom request header (see requestHeaderConfiguration below; the reserved
@@ -1502,13 +1502,13 @@ export class BackendConstruct extends Construct {
     // boto3/botocore. It signs InvokeAgentRuntime with a custom header added in
     // a `before-sign` handler, and the AWS-managed runtime's bundled SDK signed
     // that inconsistently across containers — see the handler's requirements.txt.
-    // This follows FAST's own bundling convention (feedback/cedar-policy use
+    // This follows the upstream template's own bundling convention (feedback/cedar-policy use
     // PythonFunction for the same reason).
     const channelHandler = new PythonFunction(this, "ChannelHandlerLambda", {
       functionName: `${config.stack_name_base}-channel-handler`,
       runtime: lambda.Runtime.PYTHON_3_13,
       // ARM_64 keeps the bundling Docker build on the same architecture as the
-      // CodeBuild host (Graviton) and matches FAST's other PythonFunctions
+      // CodeBuild host (Graviton) and matches the upstream template's other PythonFunctions
       // (feedback, cedar-policy). Leaving it at the x86_64 default makes CDK
       // build with --platform linux/amd64, which cannot exec on an arm64 host:
       // "exec /bin/sh: exec format error".

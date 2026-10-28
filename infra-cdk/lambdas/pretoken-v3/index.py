@@ -1,6 +1,6 @@
 """Pre-Token Generation Lambda (V3) for M2M flows — conformity assistant.
 
-Adapted from FAST's ``infra-cdk/lambdas/pretoken-v3/index.py``.
+Adapted from the upstream template's ``infra-cdk/lambdas/pretoken-v3/index.py``.
 
 Injects CUSTOM claims into M2M access tokens so the AgentCore Gateway can
 evaluate the Cedar policy in ``gateway/policies/policy.cedar``. This Lambda fires
@@ -12,8 +12,8 @@ Claims injected:
     - role:    "technician" or "expert", resolved from the conformity-contacts
                DynamoDB table (see below)
 
-WHY A DYNAMODB LOOKUP (vs FAST's hardcoded UUID map):
-FAST ships a hardcoded ``USER_ROLE_MAP`` that requires a two-step deploy (look up
+WHY A DYNAMODB LOOKUP (vs the upstream template's hardcoded UUID map):
+​The upstream template ships a hardcoded ``USER_ROLE_MAP`` that requires a two-step deploy (look up
 subs, paste them in, redeploy). The conformity assistant already has a contacts
 table — the same one the channel handler uses to map a phone number to a Cognito
 user. We read the role from it live, so promoting someone to expert is a data

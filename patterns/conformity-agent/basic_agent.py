@@ -1,7 +1,7 @@
 """Conformity assistant agent — Strands on Bedrock AgentCore Runtime.
 
 Ported from the POC (``lambdas/strands_agent.py`` + ``lambdas/lambda_function.py``)
-into FAST's pattern shape. What changed vs. the POC:
+into the upstream template's pattern shape. What changed vs. the POC:
 
   * The POC's one-shot ``bedrock.agent_invoke`` per SNS record becomes an
     AgentCore Runtime entrypoint that streams a response.

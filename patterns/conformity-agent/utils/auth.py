@@ -4,7 +4,7 @@ Adapted from ``patterns/utils/auth.py``. Two deliberate differences:
 
 1. **User identity comes from the runtime request header, not the JWT.**
 
-   FAST's runtime is fronted by a Cognito *JWT* authorizer, so the agent reads
+   The upstream template's runtime is fronted by a Cognito *JWT* authorizer, so the agent reads
    the caller's ``sub`` from the Authorization header. Our primary caller is the
    **channel-handler Lambda** — a service-to-service backend, not a browser. The
    AWS guidance is explicit that service-to-service calls should use **IAM
@@ -118,7 +118,7 @@ def get_secret(secret_name: str) -> str:
 def get_gateway_access_token(user_id: str) -> str:
     """Get an M2M OAuth2 token for the Gateway, enriched with the user's claims.
 
-    Identical in spirit to FAST's implementation: call the Cognito
+    Identical in spirit to the upstream template's implementation: call the Cognito
     ``/oauth2/token`` client-credentials endpoint directly so that
     ``aws_client_metadata`` can carry ``verified_user_id``. The V3 Pre-Token
     Lambda reads it and injects the ``role`` claim the Cedar policy evaluates.

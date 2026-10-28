@@ -32,7 +32,7 @@ export interface AppConfig {
   backend: {
     pattern: string
     deployment_type: DeploymentType
-    /** Name for the agent runtime. Valid characters: a-z, A-Z, 0-9, _. Defaults to "FASTAgent". */
+    /** Name for the agent runtime. Valid characters: a-z, A-Z, 0-9, _. Defaults to "ConformityAgent". */
     agent_name: string
     /** Network mode for the AgentCore Runtime. Defaults to "PUBLIC". */
     network_mode: NetworkMode
@@ -63,7 +63,7 @@ export interface AppConfig {
   }
   /**
    * Domain configuration for the conformity assistant (this fork's use case).
-   * All keys have safe defaults so a plain FAST deployment still works.
+   * All keys have safe defaults so a plain upstream-template deployment still works.
    */
   conformity?: ConformityConfig
 }
@@ -245,7 +245,7 @@ export class ConfigManager {
         backend: {
           pattern: parsedConfig.backend?.pattern || "strands-single-agent",
           deployment_type: deploymentType,
-          agent_name: parsedConfig.backend?.agent_name || "FASTAgent",
+          agent_name: parsedConfig.backend?.agent_name || "ConformityAgent",
           network_mode: networkMode,
           vpc: vpcConfig,
           use_long_term_memory: parsedConfig.backend?.use_long_term_memory === true,

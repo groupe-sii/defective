@@ -1,12 +1,11 @@
 # Conformity Assistant — fork notes
 
-This repo is a **fork of [FAST](https://github.com/awslabs/fullstack-solution-template-for-agentcore)**
-(the Fullstack AgentCore Solution Template) carrying a specific use case: a
-**multichannel non-conformity assistant** on Amazon Bedrock AgentCore.
+This repo builds a **multichannel non-conformity assistant** on Amazon Bedrock AgentCore,
+on top of AWS's Fullstack AgentCore Solution Template.
 
-Read FAST's own docs under `docs/` for everything generic (deployment, memory,
-gateway, Cedar, streaming, frontend). **This file documents only what this fork
-changes**, because those are the parts FAST's docs do not cover.
+Everything generic (deployment, memory, gateway, Cedar, streaming, frontend) is covered by the
+upstream template's docs. **This file documents only what this project
+changes**, because those are the parts the upstream template's docs do not cover.
 
 ---
 
@@ -23,11 +22,11 @@ arrived on.
 
 ---
 
-## Where it differs from FAST
+## Where it differs from the upstream template
 
-### 1. An inbound messaging path (FAST has none)
+### 1. An inbound messaging path (the upstream template has none)
 
-FAST is a *request-driven web chat* template: the browser calls the Runtime. It
+The upstream template is a *request-driven web chat*: the browser calls the Runtime. It
 has no notion of an unsolicited inbound message. This fork adds that brick:
 
 ```
@@ -40,12 +39,12 @@ AWS End User Messaging (WhatsApp / SMS)
               └─ dispatch the reply          (dispatcher.py, MOCK_CHANNELS)
 ```
 
-Nothing about FAST's Runtime, Gateway or frontend was removed — the channel
+Nothing about the upstream template's Runtime, Gateway or frontend was removed — the channel
 handler is purely additive.
 
 ### 2. The Runtime uses IAM SigV4, not a JWT authorizer
 
-FAST fronts the Runtime with a Cognito **JWT** authorizer because its caller is
+The upstream template fronts the Runtime with a Cognito **JWT** authorizer because its caller is
 a browser. Our primary caller is the **channel-handler Lambda** — a
 service-to-service backend. AWS guidance for that case is IAM SigV4 with the
 user propagated via the `X-Amzn-Bedrock-AgentCore-Runtime-User-Id` header, so
@@ -57,7 +56,7 @@ reads the user id from the request header first and falls back to a JWT `sub`
 
 The **Gateway keeps its JWT authorizer** — that is a separate authorizer and is
 what makes the Cedar policy work. The Runtime mints an M2M token for the Gateway
-exactly as FAST does.
+exactly as the upstream template does.
 
 ### 3. Roles are data + Cedar, not an environment variable
 
@@ -160,7 +159,7 @@ See `docs/OPEN-IDENTITY-PROPAGATION.md`.
 
 ### 6. Region and model
 
-- Region: **eu-west-1** (FAST defaults to us-east-1).
+- Region: **eu-west-1** (the upstream template defaults to us-east-1).
 - Model: **`eu.amazon.nova-pro-v1:0`** — an inference profile valid in
   eu-west-1. `us.*` profiles are rejected there with `ValidationException`.
   Model access must be enabled in eu-west-1.
@@ -265,7 +264,7 @@ non-digits corrupts it. The SMS destination number *is* normalized.
 
 The first successful deploy of this fork surfaced four provider-side constraints
 that `cdk synth` and `tsc` cannot catch, because `aws-cdk-lib` shapes do not
-validate them and FAST never exercises the paths. They are recorded here so the
+validate them and the upstream template never exercises the paths. They are recorded here so the
 next change does not rediscover them.
 
 ### 1. The Runtime header allowlist has two rules
@@ -296,7 +295,7 @@ ValidationException: When parsing the policy statement, the following errors
 occurred: unexpected token `permit`
 ```
 
-The parser stops at the end of the first statement and reports the next. FAST
+The parser stops at the end of the first statement and reports the next. The upstream template
 ships one statement, so it never hits this. `gateway/policies/policy.cedar`
 needs two — most tools are permitted for either role, `record_validation` is
 expert-only — and collapsing them would change what is authorised.
@@ -340,7 +339,7 @@ sanitising.
 ### 5. The runtime's event stream has two easy-to-miss shapes
 
 `_extract_reply` reads the SSE stream the Runtime returns. Two properties cost a
-deploy each to find, and neither is in FAST's frontend parser
+deploy each to find, and neither is in the upstream template's frontend parser
 (`frontend/src/lib/agentcore-client/parsers/strands.ts`), which reads `message`
 events and expects a `{"result": {"stop_reason": ...}}` dict:
 
@@ -376,7 +375,7 @@ same event kinds on both paths), so the runtime's SSE contract and
 `_extract_reply` are unchanged. `streaming` is a declared `BedrockConfig` field.
 
 Related: `patterns/conformity-agent/requirements.txt` pins a **compatible pair**
-(`strands-agents==1.61.1` + `bedrock-agentcore==1.4.7`). FAST's baseline pins
+(`strands-agents==1.61.1` + `bedrock-agentcore==1.4.7`). The upstream template's baseline pins
 `strands-agents==1.32.0`, but `bedrock-agentcore==1.4.7` requires
 `strands-agents>=1.56.0` for its strands integration — an inconsistent resolve.
 The `streaming` key is present from 1.32.0 through 1.61.1, so the setting itself
@@ -563,7 +562,7 @@ three `START` lines) — the sequence that used to fail with a SigV4 mismatch, s
 
 The seed step creates the Cognito user with a synthetic e-mail username,
 `<phone>@conformity.local`: the user pool is created with
-`UsernameAttributes: ['email']` (FAST's default), so `AdminCreateUser` rejects a
+`UsernameAttributes: ['email']` (the upstream template's default), so `AdminCreateUser` rejects a
 bare phone number with *"Username should be an email."* Nothing downstream
 depends on the username — the channel handler and Pre-Token Lambda key on the
 Cognito `sub`, which becomes `actor_id` — so the real number stays on the user's
@@ -573,7 +572,7 @@ Cognito `sub`, which becomes `actor_id` — so the real number stays on the user
 
 ## Local `cdk synth` on a machine without Docker
 
-FAST builds its Python Lambdas with
+The upstream template builds its Python Lambdas with
 `@aws-cdk/aws-lambda-python-alpha`'s `PythonFunction`, which shells out to
 Docker **at synth time** to bundle dependencies. On a machine without Docker
 (which is why this repo deploys through CodeBuild) `cdk synth` fails with
@@ -587,4 +586,4 @@ This is expected, not a misconfiguration. Options:
 
 Do **not** "fix" it by converting `PythonFunction` to plain `lambda.Function` —
 that changes dependency bundling (e.g. `pydantic` for the feedback Lambda) and
-diverges from upstream FAST.
+diverges from the upstream template.
