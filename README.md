@@ -66,7 +66,7 @@ Validate the CDK without Docker: `cd infra-cdk && npx tsc --noEmit`.
 
 ## Demo
 
-**Video:** [Watch on YouTube](https://www.youtube.com/watch?v=aWs6lpiPDRU) *(unlisted)*
+**Video:** [Watch on YouTube](https://www.youtube.com/watch?v=0eyuL38R8IE) *(unlisted)*
 
 Run the two-phone emulator locally:
 
