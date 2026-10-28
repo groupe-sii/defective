@@ -77,8 +77,8 @@ def load_expert_contacts() -> list:
 def username_for_phone(phone: str) -> str:
     """Cognito username for a phone identity.
 
-    The user pool is created with ``UsernameAttributes: ['email']`` (FAST's
-    default — e-mail is the sign-in identifier), so Cognito rejects a bare phone
+    The user pool is created with ``UsernameAttributes: ['email']`` (the upstream
+    template's default — e-mail is the sign-in identifier), so Cognito rejects a bare phone
     number with:
 
         InvalidParameterException: Username should be an email.

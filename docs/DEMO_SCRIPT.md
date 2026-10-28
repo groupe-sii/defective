@@ -157,7 +157,7 @@ whole SNS batch."
 
 ## Closing slide material
 
-- `docs/CONFORMITY_FORK.md` — every deviation from upstream FAST
+- `docs/CONFORMITY_FORK.md` — every deviation from the upstream template
 - `gateway/policies/policy.cedar` — the authorization surface, 2 statements
 - `patterns/conformity-agent/utils/locales.py` — en_US / pt_BR / fr_FR
 - `scripts/smoke-channels.py` — the honest channel report

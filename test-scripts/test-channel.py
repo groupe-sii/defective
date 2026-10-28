@@ -54,7 +54,7 @@ from pathlib import Path
 
 import boto3
 
-# Reuse FAST's stack/output helpers so this script behaves like its siblings.
+# Reuse the upstream template's stack/output helpers so this script behaves like its siblings.
 scripts_dir = Path(__file__).parent.parent / "scripts"
 if str(scripts_dir) not in sys.path:
     sys.path.insert(0, str(scripts_dir))
