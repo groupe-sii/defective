@@ -12,7 +12,7 @@ conversation is shared across channels (AgentCore Memory, keyed by person).
 
 ## Architecture
 
-![DéfecTive Architecture](docs/architecture-diagram/DefecTive_Architecture.svg)
+![DéfecTive Architecture](docs/architecture-diagram/DefecTive_Architecture.png)
 
 AWS End User Messaging (WhatsApp/SMS) → SNS (customer-managed KMS key) → **channel-handler Lambda**
 (normalizes the envelope, resolves the sender to a Cognito identity/role, invokes the AgentCore Runtime
