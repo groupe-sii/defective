@@ -1,4 +1,4 @@
-# Conformity Assistant — Multichannel Agent on Amazon Bedrock AgentCore
+# DéfecTive — Multichannel Conformity Assistant on Amazon Bedrock AgentCore
 
 > Built for the **AWS CDS Partner Hackathon** ([devpost](https://aws-cds-partner.devpost.com/)).
 > A multichannel conformity assistant for an operations team, built with **Strands-Agents** and Amazon Bedrock on top of AWS End User Messaging.
@@ -10,7 +10,9 @@ expert** approves or rejects it from their own 1:1 chat; the approval automatica
 procedure to the equipment contractor. Replies return on the channel the message arrived on, and the
 conversation is shared across channels (AgentCore Memory, keyed by person).
 
-## Architecture (one paragraph)
+## Architecture
+
+![DéfecTive Architecture](docs/architecture-diagram/DefecTive_Architecture.svg)
 
 AWS End User Messaging (WhatsApp/SMS) → SNS (customer-managed KMS key) → **channel-handler Lambda**
 (normalizes the envelope, resolves the sender to a Cognito identity/role, invokes the AgentCore Runtime
@@ -20,7 +22,7 @@ client) → **AgentCore Gateway** (JWT authorizer + Cedar policy engine: `record
 expert-only) → tool Lambdas (`search_ncr_history` → Bedrock KB, `create_case`/`get_case`/`list_cases`/
 `record_validation`, `send_contractor_email`/`request_expert_validation`). The frontend is the React chat (Amplify-deployed).
 
-Editable architecture diagram: [`docs/Conformity_Architecture.drawio`](docs/Conformity_Architecture.drawio) (open with [draw.io](https://app.diagrams.net/)).
+Editable architecture diagram: [`docs/architecture-diagram/DefecTive_Architecture.drawio`](docs/architecture-diagram/DefecTive_Architecture.drawio) (open with [draw.io](https://app.diagrams.net/)).
 
 ## Prerequisites
 
