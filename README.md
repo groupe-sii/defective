@@ -20,6 +20,8 @@ client) → **AgentCore Gateway** (JWT authorizer + Cedar policy engine: `record
 expert-only) → tool Lambdas (`search_ncr_history` → Bedrock KB, `create_case`/`get_case`/`list_cases`/
 `record_validation`, `send_contractor_email`/`request_expert_validation`). The frontend is the React chat (Amplify-deployed).
 
+Editable architecture diagram: [`docs/Conformity_Architecture.drawio`](docs/Conformity_Architecture.drawio) (open with [draw.io](https://app.diagrams.net/)).
+
 ## Prerequisites
 
 - AWS account in `eu-west-1`, with Bedrock model access to `eu.amazon.nova-pro-v1:0` and a Bedrock
@@ -61,7 +63,7 @@ Validate the CDK without Docker: `cd infra-cdk && npx tsc --noEmit`.
 
 ## Demo
 
-**Video:** [![Demo video](img/demo-thumb.png)](https://youtu.be/REPLACE_WITH_YOUR_VIDEO_ID) *(click to watch on YouTube — unlisted)*
+**Video:** [Watch on YouTube](https://www.youtube.com/watch?v=aWs6lpiPDRU) *(unlisted)*
 
 Run the two-phone emulator locally:
 
@@ -187,7 +189,7 @@ uv run scripts/phone-emulator.py --technician 14254147920 --expert 5511999998888
 
 ### Demo video
 
-[![Demo video](img/demo-thumb.png)](https://www.youtube.com/watch?v=aWs6lpiPDRU)
+**Demo video:** [Watch on YouTube](https://www.youtube.com/watch?v=aWs6lpiPDRU)
 
 Click-by-click walkthrough: **`docs/DEMO_SCRIPT.md`**.
 
