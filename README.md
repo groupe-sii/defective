@@ -118,6 +118,6 @@ data/                           # 92 synthetic NCRs (ingest into the KB)
 
 ## License
 
-Apache-2.0.
+Apache-2.0., Forked from the [FAST framework](https://github.com/awslabs/fullstack-solution-template-for-agentcore)
 
 ---
