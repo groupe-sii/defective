@@ -113,94 +113,11 @@ scripts/                        # deploy, seed-contacts, provision-sms, smoke-ch
 test-scripts/                   # test-channel.py (end-to-end CLI tester)
 demo/                           # phone-emulator.html + demo/sample.png
 data/                           # 92 synthetic NCRs (ingest into the KB)
-img/                            # diagrams
 ```
 
-## Key docs
-
-- `docs/CONFORMITY_FORK.md` — every deviation from the upstream template.
-- `docs/DEMO_SCRIPT.md` — click-by-click video walkthrough + real-vs-simulated table.
-- `docs/SMS_FR_SETUP.md` — self-service real-handset path (OTP, sender-ID filtering, error table).
-- `docs/PHASE_D_CHANNELS.md` — verified channel state.
-- `docs/CEDAR_POLICY_GUIDE.md` — the Cedar policy in detail.
-- `docs/OPEN-IDENTITY-PROPAGATION.md` — how identity flows into tool calls.
-- `docs/Conformity_Architecture.drawio` — editable architecture diagram.
 
 ## License
 
-Apache-2.0. First-party additions by this fork.
+Apache-2.0.
 
 ---
-
-## Hackathon submission (Devpost)
-
-**Title:** Conformity Assistant — Multichannel Agent on Amazon Bedrock AgentCore
-**Tagline:** A field technician reports an equipment non-conformity by WhatsApp or SMS; a Strands agent searches past Non-Conformity Reports, drafts a handling procedure and opens a case; a conformity expert validates it in their own chat; the validated procedure is e-mailed to the contractor. All on Amazon Bedrock AgentCore, with Cedar-gated expert-only validation.
-
-### Inspiration
-
-Field technicians in industrial plants still report non-conformities on paper or by phone, and the same defect gets re-investigated because nobody can find the previous report. We wanted an assistant that (a) is reachable on the channel a technician already uses (WhatsApp/SMS), (b) grounds its draft procedure in real past reports, (c) keeps a human expert in the loop before anything is sent to a contractor, and (d) shares one conversation across channels so a technician can start on WhatsApp and continue by SMS.
-
-### What it does
-
-- **Technician** sends a message describing a defect. The agent searches a Bedrock Knowledge Base of 92 past NCRs, cites them by id, drafts a numbered procedure, creates a case, and notifies the expert.
-- **Expert** (a different identity, seeded `role=expert`) reviews and replies `approve NC-…` or `reject NC-… <reason>`. Cedar permits `record_validation` only for `role == "expert"`, so a technician cannot even see the tool.
-- **Technician** asks `status` → live case state; the expert's approval automatically e-mails the validated procedure to the equipment contractor (real SES send), and the technician is pushed an informative notification.
-- Replies return on the channel the message arrived on; conversation history is shared across channels via AgentCore Memory keyed by person.
-
-### How we built it
-
-- **AgentCore Runtime** (Strands, Nova Pro) with AgentCore Memory (session per person/day).
-- **AgentCore Gateway** (MCP, JWT authorizer) with a REQUEST interceptor that propagates the caller's `user_id`/`role` from the M2M JWT into tool arguments.
-- **Cedar policy engine** attached to the Gateway in `ENFORCE` mode: `record_validation` is expert-only.
-- **Tools:** `search_ncr_history` (Bedrock KB), `create_case`/`get_case`/`list_cases`/`record_validation` (DynamoDB), `send_contractor_email`/`request_expert_validation` (SES + transcript mirror).
-- **Channel handler** (Lambda): normalizes WhatsApp/SMS envelopes, resolves sender → Cognito identity/role, invokes the Runtime, dispatches the reply, writes both directions to a transcript table.
-- **Infra:** CDK (TypeScript), deployed in-cloud via CodeBuild. Config-driven (`config.yaml`).
-
-### Challenges
-
-- Cedar created but never enforced (Gateway showed `policyEngineConfiguration: null`) — fixed by attaching it inside the custom resource, re-run on every deploy.
-- Pre-Token Lambda had no `CONTACTS_TABLE` env var — silently defaulted everyone to `role=technician`.
-- AgentCore keeps one warm container per session that replays history — fixed with `filter_restored_tool_context=True`, a per-turn directive, and live DynamoDB data injection.
-- `list_cases` ValidationException on a single-key GSI — fixed by filtering in Python.
-- KB was image-only — ran an ingestion job for 92 text NCRs so `search_ncr_history` returns citable `ref`s.
-- Real SMS/email/WhatsApp inbound: sandbox, unverified destinations, no WABA, no SES identity — documented as mocks with a self-service SMS path.
-
-### Accomplishments
-
-- A genuinely enforced Cedar policy on the Gateway, with an honest smoke test.
-- The phone emulator + transcript table make the demo recordable without a real handset or WABA.
-- The `status` answer is backed by live DynamoDB data injected into the prompt.
-- `smoke-channels.py` surfaces the two silent-trap failures.
-
-### What's next
-
-- Link a WABA and verify an SES identity to take WhatsApp and e-mail live.
-- Request SMS production access and register the `CONFORMITE` sender ID.
-- Ops console (pending-cases dashboard) on top of the existing chat.
-- AgentCore Evaluations for draft procedure quality.
-
-### Built with
-
-Amazon Bedrock (Nova Pro), Amazon Bedrock AgentCore (Runtime, Gateway, Memory, Cedar), Amazon Bedrock Knowledge Bases, AWS End User Messaging (SMS), Amazon Cognito, Amazon DynamoDB, AWS Lambda, Amazon SNS, AWS CDK, AWS CodeBuild, AWS Amplify, Strands Agents, Python, TypeScript.
-
-### Try it
-
-```bash
-python scripts/deploy-with-codebuild.py
-uv run scripts/seed-contacts.py
-uv run scripts/ingest-ncr-text.py
-uv run scripts/provision-sms.py --simulator
-uv run scripts/smoke-channels.py
-uv run scripts/phone-emulator.py --technician 14254147920 --expert 5511999998888 --image demo/sample.png
-```
-
-### Demo video
-
-**Demo video:** [Watch on YouTube](https://www.youtube.com/watch?v=aWs6lpiPDRU)
-
-Click-by-click walkthrough: **`docs/DEMO_SCRIPT.md`**.
-
-### License
-
-Apache-2.0. First-party additions by this fork.
